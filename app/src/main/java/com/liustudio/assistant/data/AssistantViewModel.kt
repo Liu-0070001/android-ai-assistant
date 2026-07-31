@@ -33,9 +33,10 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
         EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
         EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
     )
-    private val _messages = MutableStateFlow(listOf(ChatMessage(sender = Sender.ASSISTANT, content = "你好，我是本地智伴。添加资料、拍照，或直接开始提问。")))
+    private val localPrefs = application.getSharedPreferences("local_ai_data", Context.MODE_PRIVATE)
+    private val _messages = MutableStateFlow(loadMessages().ifEmpty { listOf(ChatMessage(sender = Sender.ASSISTANT, content = "你好，我是本地智伴。添加资料、拍照，或直接开始提问。")) })
     val messages = _messages.asStateFlow()
-    private val _knowledge = MutableStateFlow<List<KnowledgeDocument>>(emptyList())
+    private val _knowledge = MutableStateFlow(loadKnowledge())
     val knowledge = _knowledge.asStateFlow()
     private val _personas = MutableStateFlow(listOf(
         Persona(name = "通用助手", prompt = "你是可靠、简洁的中文助手。", icon = "✦", official = true),
@@ -57,6 +58,30 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
     private val _loading = MutableStateFlow(false)
     val loading = _loading.asStateFlow()
 
+    private fun loadMessages(): List<ChatMessage> = runCatching {
+        val array = JSONArray(localPrefs.getString("messages", "[]"))
+        List(array.length()) { index -> array.getJSONObject(index).let { item ->
+            ChatMessage(id = item.getString("id"), sender = Sender.valueOf(item.getString("sender")), content = item.getString("content"), timestamp = item.getLong("timestamp"))
+        } }
+    }.getOrDefault(emptyList())
+
+    private fun saveMessages() {
+        val array = JSONArray()
+        _messages.value.forEach { message -> array.put(JSONObject().put("id", message.id).put("sender", message.sender.name).put("content", message.content).put("timestamp", message.timestamp)) }
+        localPrefs.edit().putString("messages", array.toString()).apply()
+    }
+
+    private fun loadKnowledge(): List<KnowledgeDocument> = runCatching {
+        val array = JSONArray(localPrefs.getString("knowledge", "[]"))
+        List(array.length()) { index -> array.getJSONObject(index).let { item -> KnowledgeDocument(item.getString("id"), item.getString("name"), item.getString("uri"), item.optString("text"), item.getLong("addedAt")) } }
+    }.getOrDefault(emptyList())
+
+    private fun saveKnowledge() {
+        val array = JSONArray()
+        _knowledge.value.forEach { document -> array.put(JSONObject().put("id", document.id).put("name", document.name).put("uri", document.uri).put("text", document.text).put("addedAt", document.addedAt)) }
+        localPrefs.edit().putString("knowledge", array.toString()).apply()
+    }
+
     fun addKnowledge(uri: Uri) {
         val context = getApplication<Application>()
         val name = context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
@@ -66,6 +91,7 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch(Dispatchers.IO) {
             val text = runCatching { extractKnowledgeText(uri, name) }.getOrElse { "[无法解析：${it.message ?: "文件格式不受支持"}]" }
             _knowledge.value += KnowledgeDocument(name = name, uri = uri.toString(), text = text)
+            saveKnowledge()
         }
     }
 
@@ -115,7 +141,7 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
         }
         return result.toString()
     }
-    fun removeKnowledge(id: String) { _knowledge.value = _knowledge.value.filterNot { it.id == id } }
+    fun removeKnowledge(id: String) { _knowledge.value = _knowledge.value.filterNot { it.id == id }; saveKnowledge() }
     fun addPersona(name: String, prompt: String) { if (name.isNotBlank() && prompt.isNotBlank()) _personas.value += Persona(name = name, prompt = prompt) }
     fun selectPersona(persona: Persona) { _activePersona.value = persona }
     fun addMcp(name: String, endpoint: String) { if (name.isNotBlank() && endpoint.startsWith("https://")) _mcps.value += McpServer(name = name, endpoint = endpoint) }
@@ -125,8 +151,8 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
         securePrefs.edit().putString("base_url", settings.baseUrl.trimEnd('/')).putString("model", settings.model)
             .putString("api_key", settings.apiKey).putBoolean("auto_web_search", settings.autoWebSearch).apply()
     }
-    fun deleteMessage(id: String) { _messages.value = _messages.value.filterNot { it.id == id } }
-    fun deleteFrom(id: String) { _messages.value = _messages.value.takeWhile { it.id != id } }
+    fun deleteMessage(id: String) { _messages.value = _messages.value.filterNot { it.id == id }; saveMessages() }
+    fun deleteFrom(id: String) { _messages.value = _messages.value.takeWhile { it.id != id }; saveMessages() }
 
     fun attachmentForUri(uri: Uri): Attachment {
         val resolver = getApplication<Application>().contentResolver
@@ -142,9 +168,11 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
         if (text.isBlank() && attachments.isEmpty()) return
         val user = ChatMessage(sender = Sender.USER, content = text, attachments = attachments)
         _messages.value += user
+        saveMessages()
         val configured = _settings.value
         if (configured.baseUrl.isBlank() || configured.model.isBlank() || configured.apiKey.isBlank()) {
             _messages.value += ChatMessage(sender = Sender.ASSISTANT, content = "请先在“设置”填写兼容 API 的地址、模型和 API Key。你的 Key 只会保存在此设备的加密存储中。")
+            saveMessages()
             return
         }
         _loading.value = true
@@ -152,6 +180,7 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
             val result = runCatching { requestCompletion(configured, user) }
             val completion = result.getOrElse { Completion("请求失败：${it.message ?: "请检查网络和 API 配置"}") }
             _messages.value += ChatMessage(sender = Sender.ASSISTANT, content = completion.content, sources = completion.sources)
+            saveMessages()
             _loading.value = false
         }
     }
