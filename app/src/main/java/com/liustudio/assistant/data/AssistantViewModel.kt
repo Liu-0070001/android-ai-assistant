@@ -57,7 +57,11 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
             val index = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
             if (cursor.moveToFirst() && index >= 0) cursor.getString(index) else uri.lastPathSegment
         } ?: uri.lastPathSegment ?: "未命名文件"
-        _knowledge.value += KnowledgeDocument(name = name, uri = uri.toString())
+        val type = context.contentResolver.getType(uri).orEmpty()
+        val text = if (type.startsWith("text/") || name.endsWith(".md", true) || name.endsWith(".json", true) || name.endsWith(".csv", true)) {
+            runCatching { context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText().take(500_000) }.orEmpty() }.getOrDefault("")
+        } else ""
+        _knowledge.value += KnowledgeDocument(name = name, uri = uri.toString(), text = text)
     }
     fun removeKnowledge(id: String) { _knowledge.value = _knowledge.value.filterNot { it.id == id } }
     fun addPersona(name: String, prompt: String) { if (name.isNotBlank() && prompt.isNotBlank()) _personas.value += Persona(name = name, prompt = prompt) }

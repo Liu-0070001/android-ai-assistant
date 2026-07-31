@@ -22,7 +22,13 @@ data class Attachment(
 )
 enum class AttachmentKind { IMAGE, FILE, FOLDER }
 
-data class KnowledgeDocument(val id: String = UUID.randomUUID().toString(), val name: String, val uri: String, val addedAt: Long = System.currentTimeMillis())
+data class KnowledgeDocument(
+    val id: String = UUID.randomUUID().toString(),
+    val name: String,
+    val uri: String,
+    val text: String = "",
+    val addedAt: Long = System.currentTimeMillis()
+)
 data class Persona(val id: String = UUID.randomUUID().toString(), val name: String, val prompt: String, val icon: String = "✦", val official: Boolean = false)
 data class McpServer(val id: String = UUID.randomUUID().toString(), val name: String, val endpoint: String, val enabled: Boolean = false)
 data class ApiSettings(val baseUrl: String = "", val model: String = "", val apiKey: String = "", val autoWebSearch: Boolean = true)
