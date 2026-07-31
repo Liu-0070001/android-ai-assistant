@@ -17,6 +17,11 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import android.util.Base64
+import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
+import com.tom_roush.pdfbox.pdmodel.PDDocument
+import com.tom_roush.pdfbox.text.PDFTextStripper
+import org.xmlpull.v1.XmlPullParser
+import java.util.zip.ZipInputStream
 
 class AssistantViewModel(application: Application) : AndroidViewModel(application) {
     private val masterKey = MasterKey.Builder(application).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build()
@@ -57,11 +62,57 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
             val index = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
             if (cursor.moveToFirst() && index >= 0) cursor.getString(index) else uri.lastPathSegment
         } ?: uri.lastPathSegment ?: "未命名文件"
+        viewModelScope.launch(Dispatchers.IO) {
+            val text = runCatching { extractKnowledgeText(uri, name) }.getOrElse { "[无法解析：${it.message ?: "文件格式不受支持"}]" }
+            _knowledge.value += KnowledgeDocument(name = name, uri = uri.toString(), text = text)
+        }
+    }
+
+    private fun extractKnowledgeText(uri: Uri, name: String): String {
+        val context = getApplication<Application>()
+        val size = context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1L
+        require(size < 20L * 1024 * 1024 || size == -1L) { "文件超过 20 MB 限制" }
         val type = context.contentResolver.getType(uri).orEmpty()
-        val text = if (type.startsWith("text/") || name.endsWith(".md", true) || name.endsWith(".json", true) || name.endsWith(".csv", true)) {
-            runCatching { context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText().take(500_000) }.orEmpty() }.getOrDefault("")
-        } else ""
-        _knowledge.value += KnowledgeDocument(name = name, uri = uri.toString(), text = text)
+        return when {
+            type.startsWith("text/") || name.endsWith(".md", true) || name.endsWith(".json", true) || name.endsWith(".csv", true) ->
+                context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText().take(500_000) }.orEmpty()
+            name.endsWith(".pdf", true) -> {
+                PDFBoxResourceLoader.init(context)
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    PDDocument.load(input).use { document ->
+                        require(document.numberOfPages <= 300) { "PDF 超过 300 页限制" }
+                        PDFTextStripper().getText(document).take(500_000)
+                    }
+                }.orEmpty()
+            }
+            name.endsWith(".docx", true) -> extractDocxText(uri)
+            else -> throw IllegalArgumentException("支持 TXT、Markdown、JSON、CSV、PDF 和 DOCX")
+        }
+    }
+
+    private fun extractDocxText(uri: Uri): String {
+        val context = getApplication<Application>()
+        val result = StringBuilder()
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            ZipInputStream(input).use { zip ->
+                var entries = 0
+                var entry = zip.nextEntry
+                while (entry != null) {
+                    require(++entries <= 2_000) { "DOCX 包含过多文件" }
+                    if (entry.name == "word/document.xml") {
+                        val parser = android.util.Xml.newPullParser()
+                        parser.setInput(zip, "UTF-8")
+                        while (parser.next() != XmlPullParser.END_DOCUMENT) {
+                            if (parser.eventType == XmlPullParser.TEXT) result.append(parser.text)
+                            if (result.length > 500_000) return result.take(500_000)
+                        }
+                    }
+                    zip.closeEntry()
+                    entry = zip.nextEntry
+                }
+            }
+        }
+        return result.toString()
     }
     fun removeKnowledge(id: String) { _knowledge.value = _knowledge.value.filterNot { it.id == id } }
     fun addPersona(name: String, prompt: String) { if (name.isNotBlank() && prompt.isNotBlank()) _personas.value += Persona(name = name, prompt = prompt) }
@@ -103,6 +154,22 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    private fun retrieveKnowledge(query: String): String {
+        val tokens = query.lowercase().split(Regex("[^\\p{L}\\p{N}]+|(?<=\\p{IsHan})(?=\\p{IsHan})")).filter { it.length > 1 }.toSet()
+        return _knowledge.value.mapNotNull { document ->
+            val text = document.text
+            if (text.startsWith("[无法解析") || text.isBlank()) return@mapNotNull null
+            val normalized = text.lowercase()
+            val score = tokens.sumOf { token -> Regex(Regex.escape(token)).findAll(normalized).count() }
+            if (score == 0) return@mapNotNull null
+            val index = tokens.map { normalized.indexOf(it) }.firstOrNull { it >= 0 } ?: 0
+            val start = (index - 400).coerceAtLeast(0)
+            val end = (index + 1_600).coerceAtMost(text.length)
+            Triple(score, document.name, text.substring(start, end))
+        }.sortedByDescending { it.first }.take(4)
+            .joinToString("\n\n") { (_, name, excerpt) -> "[$name]\n$excerpt" }
+    }
+
     private fun buildMultimodalContent(prompt: String, attachments: List<Attachment>): Any {
         if (attachments.isEmpty()) return prompt
         val context = getApplication<Application>()
@@ -133,11 +200,11 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
         _messages.value.filter { it.id != user.id }.takeLast(12).forEach { message ->
             requestMessages.put(JSONObject().put("role", if (message.sender == Sender.USER) "user" else "assistant").put("content", message.content))
         }
-        val context = _knowledge.value.take(5).joinToString("、") { it.name }
+        val knowledgeContext = retrieveKnowledge(user.content)
         val prompt = buildString {
             append(user.content)
-            if (context.isNotBlank()) append("\n\n当前可用本地知识库文件：$context。需要引用时请说明文件名。")
-            if (settings.autoWebSearch) append("\n\n若现有上下文无法可靠回答，请明确说明需要联网搜索；不要编造搜索结果。")
+            if (knowledgeContext.isNotBlank()) append("\n\n本地知识库检索结果（引用回答时标明文件名）：\n$knowledgeContext")
+            if (settings.autoWebSearch) append("\n\n若本地资料无法可靠回答，请明确说明需要联网搜索；不要编造搜索结果。")
         }
         requestMessages.put(JSONObject().put("role", "user").put("content", buildMultimodalContent(prompt, user.attachments)))
         val connection = (url.openConnection() as HttpURLConnection).apply {
