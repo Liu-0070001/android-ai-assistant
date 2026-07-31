@@ -31,4 +31,5 @@ data class KnowledgeDocument(
 )
 data class Persona(val id: String = UUID.randomUUID().toString(), val name: String, val prompt: String, val icon: String = "✦", val official: Boolean = false)
 data class McpServer(val id: String = UUID.randomUUID().toString(), val name: String, val endpoint: String, val enabled: Boolean = false)
+data class Completion(val content: String, val sources: List<String> = emptyList())
 data class ApiSettings(val baseUrl: String = "", val model: String = "", val apiKey: String = "", val autoWebSearch: Boolean = true)

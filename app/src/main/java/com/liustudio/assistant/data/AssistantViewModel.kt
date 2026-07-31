@@ -16,6 +16,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
 import android.util.Base64
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.pdmodel.PDDocument
@@ -149,7 +150,8 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
         _loading.value = true
         viewModelScope.launch {
             val result = runCatching { requestCompletion(configured, user) }
-            _messages.value += ChatMessage(sender = Sender.ASSISTANT, content = result.getOrElse { "请求失败：${it.message ?: "请检查网络和 API 配置"}" })
+            val completion = result.getOrElse { Completion("请求失败：${it.message ?: "请检查网络和 API 配置"}") }
+            _messages.value += ChatMessage(sender = Sender.ASSISTANT, content = completion.content, sources = completion.sources)
             _loading.value = false
         }
     }
@@ -194,17 +196,37 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
         return content
     }
 
-    private suspend fun requestCompletion(settings: ApiSettings, user: ChatMessage): String = withContext(Dispatchers.IO) {
+    private fun searchWeb(query: String): List<Pair<String, String>> {
+        val url = URL("https://api.duckduckgo.com/?q=${URLEncoder.encode(query, "UTF-8")}&format=json&no_html=1&skip_disambig=1")
+        val response = (url.openConnection() as HttpURLConnection).run {
+            connectTimeout = 10_000; readTimeout = 15_000; setRequestProperty("User-Agent", "LocalAIAssistant/1.0")
+            inputStream.bufferedReader().use { it.readText() }
+        }
+        val payload = JSONObject(response)
+        val results = mutableListOf<Pair<String, String>>()
+        payload.optString("AbstractURL").takeIf { it.isNotBlank() }?.let { results += it to payload.optString("AbstractText") }
+        payload.optJSONArray("RelatedTopics")?.let { topics ->
+            for (index in 0 until topics.length()) {
+                val item = topics.optJSONObject(index) ?: continue
+                item.optString("FirstURL").takeIf { it.isNotBlank() }?.let { results += it to item.optString("Text") }
+                if (results.size >= 4) break
+            }
+        }
+        return results.filter { it.second.isNotBlank() }.take(4)
+    }
+
+    private suspend fun requestCompletion(settings: ApiSettings, user: ChatMessage): Completion = withContext(Dispatchers.IO) {
         val url = URL("${settings.baseUrl.trimEnd('/')}/chat/completions")
         val requestMessages = JSONArray().put(JSONObject().put("role", "system").put("content", _activePersona.value.prompt))
         _messages.value.filter { it.id != user.id }.takeLast(12).forEach { message ->
             requestMessages.put(JSONObject().put("role", if (message.sender == Sender.USER) "user" else "assistant").put("content", message.content))
         }
         val knowledgeContext = retrieveKnowledge(user.content)
+        val webResults = if (settings.autoWebSearch && knowledgeContext.isBlank()) runCatching { searchWeb(user.content) }.getOrDefault(emptyList()) else emptyList()
         val prompt = buildString {
             append(user.content)
             if (knowledgeContext.isNotBlank()) append("\n\n本地知识库检索结果（引用回答时标明文件名）：\n$knowledgeContext")
-            if (settings.autoWebSearch) append("\n\n若本地资料无法可靠回答，请明确说明需要联网搜索；不要编造搜索结果。")
+            if (webResults.isNotEmpty()) append("\n\n联网搜索结果（只可依据以下摘要回答，并引用网址）：\n" + webResults.joinToString("\n") { "${it.first}\n${it.second}" })
         }
         requestMessages.put(JSONObject().put("role", "user").put("content", buildMultimodalContent(prompt, user.attachments)))
         val connection = (url.openConnection() as HttpURLConnection).apply {
@@ -226,6 +248,9 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
         val payload = runCatching { JSONObject(response) }.getOrElse {
             throw IllegalStateException("服务返回的内容不是有效 JSON，请检查 API 地址、模型和服务商兼容性。")
         }
-        payload.getJSONArray("choices").getJSONObject(0).getJSONObject("message").optString("content", "模型未返回文本")
+        Completion(
+            content = payload.getJSONArray("choices").getJSONObject(0).getJSONObject("message").optString("content", "模型未返回文本"),
+            sources = webResults.map { it.first }
+        )
     }
 }
