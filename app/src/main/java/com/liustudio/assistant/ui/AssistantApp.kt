@@ -26,7 +26,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.liustudio.assistant.data.*
 
 private val Ink = Color(0xFF172033)
-private val Blue = Color(0xFF356AE6)
+val Blue = Color(0xFF356AE6)
 
 @Composable fun AssistantApp(vm: AssistantViewModel = viewModel()) {
     var tab by remember { mutableIntStateOf(0) }
@@ -38,7 +38,7 @@ private val Blue = Color(0xFF356AE6)
     }
 }
 
-@Composable private fun AppHeader(title: String, subtitle: String? = null, action: (@Composable () -> Unit)? = null) = Row(Modifier.fillMaxWidth().padding(20.dp, 18.dp, 20.dp, 10.dp), verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); subtitle?.let { Text(it, color = Color.Gray, style = MaterialTheme.typography.bodySmall) } }; action?.invoke() }
+@Composable fun AppHeader(title: String, subtitle: String? = null, action: (@Composable () -> Unit)? = null) = Row(Modifier.fillMaxWidth().padding(20.dp, 18.dp, 20.dp, 10.dp), verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold); subtitle?.let { Text(it, color = Color.Gray, style = MaterialTheme.typography.bodySmall) } }; action?.invoke() }
 
 @Composable fun ChatScreen(vm: AssistantViewModel, navigate: (Int) -> Unit) {
     val messages by vm.messages.collectAsState(); val loading by vm.loading.collectAsState(); val persona by vm.activePersona.collectAsState()
