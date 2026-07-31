@@ -46,6 +46,12 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
     val personas = _personas.asStateFlow()
     private val _mcps = MutableStateFlow<List<McpServer>>(emptyList())
     val mcps = _mcps.asStateFlow()
+    private val _skills = MutableStateFlow(listOf(
+        Skill("official-writing", "写作助手", "润色、改写和总结长文本。", "https://github.com/openai/skills/writing"),
+        Skill("official-research", "研究助手", "整理研究问题并生成带来源的提纲。", "https://github.com/openai/skills/research"),
+        Skill("official-code", "代码审查", "检查代码质量、安全性和潜在错误。", "https://github.com/openai/skills/code-review")
+    ))
+    val skills = _skills.asStateFlow()
     private val _settings = MutableStateFlow(ApiSettings(
         baseUrl = securePrefs.getString("base_url", "") ?: "",
         model = securePrefs.getString("model", "") ?: "",
@@ -147,6 +153,16 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
     fun selectPersona(persona: Persona) { _activePersona.value = persona }
     fun addMcp(name: String, endpoint: String) { if (name.isNotBlank() && endpoint.startsWith("https://")) _mcps.value += McpServer(name = name, endpoint = endpoint) }
     fun toggleMcp(id: String) { _mcps.value = _mcps.value.map { if (it.id == id) it.copy(enabled = !it.enabled) else it } }
+    fun installSkill(id: String) { _skills.value = _skills.value.map { if (it.id == id) it.copy(installed = true) else it } }
+    fun toggleSkill(id: String) { _skills.value = _skills.value.map { if (it.id == id) it.copy(enabled = !it.enabled) else it } }
+    fun downloadSkill(skill: Skill, context: Context) {
+        val request = android.app.DownloadManager.Request(Uri.parse(skill.downloadUrl))
+            .setTitle(skill.name).setDescription("下载 Skill 到本机")
+            .setNotificationVisibility(android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+            .setDestinationInExternalPublicDir(android.os.Environment.DIRECTORY_DOWNLOADS, "LocalAI-Skills/${skill.id}.md")
+        (context.getSystemService(Context.DOWNLOAD_SERVICE) as android.app.DownloadManager).enqueue(request)
+        installSkill(skill.id)
+    }
     fun saveSettings(settings: ApiSettings) {
         _settings.value = settings
         securePrefs.edit().putString("base_url", settings.baseUrl.trimEnd('/')).putString("model", settings.model)
@@ -267,7 +283,7 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
         val body = JSONObject().put("model", settings.model).put("messages", requestMessages).put("temperature", 0.5).toString()
         connection.outputStream.bufferedWriter().use { it.write(body) }
         val stream = if (connection.responseCode in 200..299) connection.inputStream else connection.errorStream
-        val response = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+        val response = stream?.readBytes()?.toString(Charsets.UTF_8).orEmpty()
         val contentType = connection.contentType.orEmpty()
         if (connection.responseCode !in 200..299) {
             throw IllegalStateException("服务返回 HTTP ${connection.responseCode}：${response.take(240)}")

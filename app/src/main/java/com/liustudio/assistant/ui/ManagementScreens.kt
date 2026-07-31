@@ -37,8 +37,20 @@ import com.liustudio.assistant.data.*
 @Composable private fun PersonaDialog(confirm: (String, String) -> Unit, dismiss: () -> Unit) { var name by remember { mutableStateOf("") }; var prompt by remember { mutableStateOf("") }; AlertDialog(onDismissRequest = dismiss, title = { Text("新建人设") }, text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { OutlinedTextField(name, { name = it }, label = { Text("名称") }); OutlinedTextField(prompt, { prompt = it }, label = { Text("系统提示词") }, minLines = 3) } }, confirmButton = { TextButton({ confirm(name, prompt) }, enabled = name.isNotBlank() && prompt.isNotBlank()) { Text("保存") } }, dismissButton = { TextButton(dismiss) { Text("取消") } }) }
 
 @Composable fun McpScreen(vm: AssistantViewModel) {
-    val mcps by vm.mcps.collectAsState(); var dialog by remember { mutableStateOf(false) }
-    Column(Modifier.fillMaxSize()) { AppHeader("MCP 与扩展", "仅支持远程 HTTPS MCP；调用前会要求确认") { IconButton({ dialog = true }) { Icon(Icons.Default.Add, "添加 MCP") } }; if (mcps.isEmpty()) EmptyState(Icons.Default.Extension, "暂未连接扩展", "你可以搜索官方开放目录，或添加自己的 HTTPS MCP Server。") else LazyColumn(Modifier.padding(horizontal = 16.dp)) { items(mcps, key = { it.id }) { mcp -> ListItem(headlineContent = { Text(mcp.name, fontWeight = FontWeight.Medium) }, supportingContent = { Text(mcp.endpoint) }, leadingContent = { Icon(Icons.Default.Hub, null, tint = Blue) }, trailingContent = { Switch(mcp.enabled, { vm.toggleMcp(mcp.id) }) }); HorizontalDivider() } }; Text("安全规则：MCP 默认无法读取附件和知识库。发送文件、写入数据、支付或外发消息等操作必须逐次确认。", Modifier.padding(20.dp), style = MaterialTheme.typography.labelSmall, color = Color.Gray) }
+    val mcps by vm.mcps.collectAsState(); val skills by vm.skills.collectAsState(); var dialog by remember { mutableStateOf(false) }; val context = androidx.compose.ui.platform.LocalContext.current
+    Column(Modifier.fillMaxSize()) {
+        AppHeader("MCP 与 Skill", "官方目录 + 本地下载；高风险调用必须确认") { IconButton({ dialog = true }) { Icon(Icons.Default.Add, "添加 MCP") } }
+        LazyColumn(Modifier.padding(horizontal = 16.dp)) {
+            item { Text("官方 Skill 目录", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(vertical = 8.dp)) }
+            items(skills, key = { it.id }) { skill ->
+                ListItem(headlineContent = { Text(skill.name, fontWeight = FontWeight.Medium) }, supportingContent = { Text(skill.description) }, leadingContent = { Icon(Icons.Default.AutoAwesome, null, tint = Blue) }, trailingContent = { Row(verticalAlignment = Alignment.CenterVertically) { if (!skill.installed) TextButton({ vm.downloadSkill(skill, context) }) { Text("下载") } else Switch(skill.enabled, { vm.toggleSkill(skill.id) }) } }); HorizontalDivider()
+            }
+            item { Spacer(Modifier.height(16.dp)); Text("已配置 MCP", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(vertical = 8.dp)) }
+            if (mcps.isEmpty()) item { Text("暂无 MCP。点击右上角添加 HTTPS Server。", color = Color.Gray, modifier = Modifier.padding(vertical = 8.dp)) }
+            items(mcps, key = { it.id }) { mcp -> ListItem(headlineContent = { Text(mcp.name, fontWeight = FontWeight.Medium) }, supportingContent = { Text(mcp.endpoint) }, leadingContent = { Icon(Icons.Default.Hub, null, tint = Blue) }, trailingContent = { Switch(mcp.enabled, { vm.toggleMcp(mcp.id) }) }); HorizontalDivider() }
+            item { Text("安全规则：MCP 默认无法读取附件和知识库。发送文件、写入数据、支付或外发消息等操作必须逐次确认。", Modifier.padding(vertical = 16.dp), style = MaterialTheme.typography.labelSmall, color = Color.Gray) }
+        }
+    }
     if (dialog) McpDialog({ name, endpoint -> vm.addMcp(name, endpoint); dialog = false }, { dialog = false })
 }
 

@@ -3,11 +3,16 @@ package com.liustudio.assistant.ui
 import android.Manifest
 import android.graphics.Bitmap
 import android.util.Base64
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -78,5 +83,11 @@ val Blue = Color(0xFF356AE6)
 
 @Composable private fun MessageCard(message: ChatMessage, delete: () -> Unit, deleteAfter: () -> Unit) {
     var menu by remember { mutableStateOf(false) }; val mine = message.sender == Sender.USER
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start) { Surface(color = if (mine) Blue else Color.White, contentColor = if (mine) Color.White else Ink, shape = RoundedCornerShape(18.dp), shadowElevation = if (mine) 0.dp else 1.dp, modifier = Modifier.widthIn(max = 320.dp)) { Column(Modifier.padding(14.dp)) { Row(verticalAlignment = Alignment.CenterVertically) { Text(if (mine) "你" else "智伴", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f)); Box { Icon(Icons.Default.MoreHoriz, "消息操作", Modifier.size(18.dp).clickable { menu = true }); DropdownMenu(menu, { menu = false }) { DropdownMenuItem({ Text("删除此条") }, { delete(); menu = false }); if (mine) DropdownMenuItem({ Text("删除此条及之后") }, { deleteAfter(); menu = false }) } } }; if (message.attachments.isNotEmpty()) Text("📎 ${message.attachments.joinToString { it.name }}", style = MaterialTheme.typography.labelSmall); Text(message.content); if (message.sources.isNotEmpty()) { Spacer(Modifier.height(8.dp)); Text("联网来源", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold); message.sources.forEach { Text(it, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis) } } } } }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start) { Surface(color = if (mine) Blue else Color.White, contentColor = if (mine) Color.White else Ink, shape = RoundedCornerShape(18.dp), shadowElevation = if (mine) 0.dp else 1.dp, modifier = Modifier.widthIn(max = 320.dp)) { Column(Modifier.padding(14.dp)) { Row(verticalAlignment = Alignment.CenterVertically) { Text(if (mine) "你" else "智伴", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f)); IconButton(onClick = { (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("message", message.content)); android.widget.Toast.makeText(context, "已复制到剪贴板", android.widget.Toast.LENGTH_SHORT).show() }) { Icon(Icons.Default.ContentCopy, "复制") }; Box { Icon(Icons.Default.MoreHoriz, "消息操作", Modifier.size(18.dp).clickable { menu = true }); DropdownMenu(menu, { menu = false }) { DropdownMenuItem({ Text("删除此条") }, { delete(); menu = false }); if (mine) DropdownMenuItem({ Text("删除此条及之后") }, { deleteAfter(); menu = false }) } } }; if (message.attachments.isNotEmpty()) Text("📎 ${message.attachments.joinToString { it.name }}", style = MaterialTheme.typography.labelSmall); RichMessageText(message.content); if (message.sources.isNotEmpty()) { Spacer(Modifier.height(8.dp)); Text("联网来源", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold); message.sources.forEach { Text(it, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis) } } } } }
+}
+
+@Composable private fun RichMessageText(content: String) {
+    val blocks = content.split("```")
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) { blocks.forEachIndexed { index, block -> if (index % 2 == 1) Surface(color = Color(0xFFF0F2F6), modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) { Text(block.trim(), modifier = Modifier.padding(10.dp), fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, softWrap = false) } else block.split("\n").forEach { line -> Text(line, modifier = Modifier.fillMaxWidth()) } } }
 }
