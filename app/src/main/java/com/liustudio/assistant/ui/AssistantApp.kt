@@ -1,7 +1,8 @@
 package com.liustudio.assistant.ui
 
 import android.Manifest
-import android.net.Uri
+import android.graphics.Bitmap
+import android.util.Base64
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -43,8 +44,20 @@ val Blue = Color(0xFF356AE6)
 @Composable fun ChatScreen(vm: AssistantViewModel, navigate: (Int) -> Unit) {
     val messages by vm.messages.collectAsState(); val loading by vm.loading.collectAsState(); val persona by vm.activePersona.collectAsState()
     var input by remember { mutableStateOf("") }; var attachments by remember { mutableStateOf<List<Attachment>>(emptyList()) }; var menu by remember { mutableStateOf(false) }
-    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let { attachments = attachments + Attachment("已添加文件", it.toString(), AttachmentKind.FILE) } }
-    val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap -> if (bitmap != null) attachments = attachments + Attachment("刚拍摄的照片", "", AttachmentKind.IMAGE) }
+    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let { attachments = attachments + vm.attachmentForUri(it) } }
+    val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap ->
+        bitmap?.let {
+            val stream = java.io.ByteArrayOutputStream()
+            it.compress(Bitmap.CompressFormat.JPEG, 85, stream)
+            attachments = attachments + Attachment(
+                name = "刚拍摄的照片.jpg",
+                uri = "",
+                kind = AttachmentKind.IMAGE,
+                mimeType = "image/jpeg",
+                inlineData = Base64.encodeToString(stream.toByteArray(), Base64.NO_WRAP)
+            )
+        }
+    }
     val requestCamera = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted -> if (granted) camera.launch(null) }
     Column(Modifier.fillMaxSize()) {
         AppHeader("本地智伴", "${persona.icon} ${persona.name}") { IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "菜单") }; DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) { DropdownMenuItem(text = { Text("新建对话") }, onClick = { menu = false }); DropdownMenuItem(text = { Text("前往设置 API") }, onClick = { navigate(4); menu = false }) } }

@@ -13,7 +13,13 @@ data class ChatMessage(
     val sources: List<String> = emptyList()
 )
 
-data class Attachment(val name: String, val uri: String, val kind: AttachmentKind)
+data class Attachment(
+    val name: String,
+    val uri: String,
+    val kind: AttachmentKind,
+    val mimeType: String = "application/octet-stream",
+    val inlineData: String? = null
+)
 enum class AttachmentKind { IMAGE, FILE, FOLDER }
 
 data class KnowledgeDocument(val id: String = UUID.randomUUID().toString(), val name: String, val uri: String, val addedAt: Long = System.currentTimeMillis())

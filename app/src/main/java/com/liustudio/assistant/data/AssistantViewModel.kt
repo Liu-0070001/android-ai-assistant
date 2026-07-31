@@ -16,6 +16,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import android.util.Base64
 
 class AssistantViewModel(application: Application) : AndroidViewModel(application) {
     private val masterKey = MasterKey.Builder(application).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build()
@@ -71,6 +72,16 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
     fun deleteMessage(id: String) { _messages.value = _messages.value.filterNot { it.id == id } }
     fun deleteFrom(id: String) { _messages.value = _messages.value.takeWhile { it.id != id } }
 
+    fun attachmentForUri(uri: Uri): Attachment {
+        val resolver = getApplication<Application>().contentResolver
+        val type = resolver.getType(uri).orEmpty().ifBlank { "application/octet-stream" }
+        val name = resolver.query(uri, null, null, null, null)?.use { cursor ->
+            val index = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+            if (cursor.moveToFirst() && index >= 0) cursor.getString(index) else uri.lastPathSegment
+        } ?: uri.lastPathSegment ?: "未命名文件"
+        return Attachment(name, uri.toString(), if (type.startsWith("image/")) AttachmentKind.IMAGE else AttachmentKind.FILE, type)
+    }
+
     fun send(text: String, attachments: List<Attachment> = emptyList()) {
         if (text.isBlank() && attachments.isEmpty()) return
         val user = ChatMessage(sender = Sender.USER, content = text, attachments = attachments)
@@ -88,6 +99,30 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    private fun buildMultimodalContent(prompt: String, attachments: List<Attachment>): Any {
+        if (attachments.isEmpty()) return prompt
+        val context = getApplication<Application>()
+        val content = JSONArray().put(JSONObject().put("type", "text").put("text", prompt))
+        attachments.forEach { attachment ->
+            when {
+                attachment.kind == AttachmentKind.IMAGE -> {
+                    val base64 = attachment.inlineData ?: context.contentResolver.openInputStream(Uri.parse(attachment.uri))?.use { input ->
+                        Base64.encodeToString(input.readBytes(), Base64.NO_WRAP)
+                    } ?: throw IllegalStateException("无法读取图片：${attachment.name}")
+                    content.put(JSONObject().put("type", "image_url").put("image_url", JSONObject().put("url", "data:${attachment.mimeType};base64,$base64")))
+                }
+                attachment.mimeType.startsWith("text/") || attachment.name.endsWith(".md", true) || attachment.name.endsWith(".json", true) || attachment.name.endsWith(".csv", true) -> {
+                    val text = context.contentResolver.openInputStream(Uri.parse(attachment.uri))?.bufferedReader()?.use { it.readText() }
+                        ?: throw IllegalStateException("无法读取文件：${attachment.name}")
+                    if (text.length > 100_000) throw IllegalStateException("文件过大：${attachment.name}。请上传不超过 100,000 个字符的文本文件。")
+                    content.put(JSONObject().put("type", "text").put("text", "\n\n附件 ${attachment.name} 的内容：\n$text"))
+                }
+                else -> throw IllegalStateException("暂不支持直接发送 ${attachment.name}。目前可发送图片、TXT、Markdown、JSON 和 CSV；PDF/DOCX 会在知识库导入后解析。")
+            }
+        }
+        return content
+    }
+
     private suspend fun requestCompletion(settings: ApiSettings, user: ChatMessage): String = withContext(Dispatchers.IO) {
         val url = URL("${settings.baseUrl.trimEnd('/')}/chat/completions")
         val requestMessages = JSONArray().put(JSONObject().put("role", "system").put("content", _activePersona.value.prompt))
@@ -100,7 +135,7 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
             if (context.isNotBlank()) append("\n\n当前可用本地知识库文件：$context。需要引用时请说明文件名。")
             if (settings.autoWebSearch) append("\n\n若现有上下文无法可靠回答，请明确说明需要联网搜索；不要编造搜索结果。")
         }
-        requestMessages.put(JSONObject().put("role", "user").put("content", prompt))
+        requestMessages.put(JSONObject().put("role", "user").put("content", buildMultimodalContent(prompt, user.attachments)))
         val connection = (url.openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"; doOutput = true; connectTimeout = 30_000; readTimeout = 90_000
             setRequestProperty("Content-Type", "application/json")
