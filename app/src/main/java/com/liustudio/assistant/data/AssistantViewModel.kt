@@ -84,6 +84,7 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun addKnowledge(uri: Uri) {
         val context = getApplication<Application>()
+        runCatching { context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) }
         val name = context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
             val index = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
             if (cursor.moveToFirst() && index >= 0) cursor.getString(index) else uri.lastPathSegment
