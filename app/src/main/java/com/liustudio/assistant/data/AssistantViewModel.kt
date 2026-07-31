@@ -109,8 +109,17 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
         val body = JSONObject().put("model", settings.model).put("messages", requestMessages).put("temperature", 0.5).toString()
         connection.outputStream.bufferedWriter().use { it.write(body) }
         val stream = if (connection.responseCode in 200..299) connection.inputStream else connection.errorStream
-        val response = stream.bufferedReader().use { it.readText() }
-        if (connection.responseCode !in 200..299) throw IllegalStateException(response.take(300))
-        JSONObject(response).getJSONArray("choices").getJSONObject(0).getJSONObject("message").optString("content", "模型未返回文本")
+        val response = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+        val contentType = connection.contentType.orEmpty()
+        if (connection.responseCode !in 200..299) {
+            throw IllegalStateException("服务返回 HTTP ${connection.responseCode}：${response.take(240)}")
+        }
+        if (response.trimStart().startsWith("<") || !contentType.contains("json", ignoreCase = true)) {
+            throw IllegalStateException("服务返回了网页而非 OpenAI 兼容 JSON。请确认 API 地址是接口根路径（通常以 /v1 结尾），而不是网站首页或登录页。")
+        }
+        val payload = runCatching { JSONObject(response) }.getOrElse {
+            throw IllegalStateException("服务返回的内容不是有效 JSON，请检查 API 地址、模型和服务商兼容性。")
+        }
+        payload.getJSONArray("choices").getJSONObject(0).getJSONObject("message").optString("content", "模型未返回文本")
     }
 }
