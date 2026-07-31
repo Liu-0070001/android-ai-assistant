@@ -46,12 +46,10 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
     val personas = _personas.asStateFlow()
     private val _mcps = MutableStateFlow<List<McpServer>>(emptyList())
     val mcps = _mcps.asStateFlow()
-    private val _skills = MutableStateFlow(listOf(
-        Skill("official-writing", "写作助手", "润色、改写和总结长文本。", "https://github.com/openai/skills/writing"),
-        Skill("official-research", "研究助手", "整理研究问题并生成带来源的提纲。", "https://github.com/openai/skills/research"),
-        Skill("official-code", "代码审查", "检查代码质量、安全性和潜在错误。", "https://github.com/openai/skills/code-review")
-    ))
+    private val _skills = MutableStateFlow(loadSkills())
     val skills = _skills.asStateFlow()
+    private val _skillSearchState = MutableStateFlow("搜索 GitHub 上包含 SKILL.md 的公开仓库")
+    val skillSearchState = _skillSearchState.asStateFlow()
     private val _settings = MutableStateFlow(ApiSettings(
         baseUrl = securePrefs.getString("base_url", "") ?: "",
         model = securePrefs.getString("model", "") ?: "",
@@ -86,6 +84,17 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
         val array = JSONArray()
         _knowledge.value.forEach { document -> array.put(JSONObject().put("id", document.id).put("name", document.name).put("uri", document.uri).put("text", document.text).put("addedAt", document.addedAt)) }
         localPrefs.edit().putString("knowledge", array.toString()).apply()
+    }
+
+    private fun loadSkills(): List<Skill> = runCatching {
+        val array = JSONArray(localPrefs.getString("skills", "[]"))
+        List(array.length()) { index -> array.getJSONObject(index).let { item -> Skill(item.getString("id"), item.getString("name"), item.getString("description"), item.getString("downloadUrl"), item.optString("sourceUrl"), item.optString("content"), item.optBoolean("installed"), item.optBoolean("enabled")) } }
+    }.getOrDefault(emptyList())
+
+    private fun saveSkills() {
+        val array = JSONArray()
+        _skills.value.forEach { skill -> array.put(JSONObject().put("id", skill.id).put("name", skill.name).put("description", skill.description).put("downloadUrl", skill.downloadUrl).put("sourceUrl", skill.sourceUrl).put("content", skill.content).put("installed", skill.installed).put("enabled", skill.enabled)) }
+        localPrefs.edit().putString("skills", array.toString()).apply()
     }
 
     fun addKnowledge(uri: Uri) {
@@ -153,15 +162,45 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
     fun selectPersona(persona: Persona) { _activePersona.value = persona }
     fun addMcp(name: String, endpoint: String) { if (name.isNotBlank() && endpoint.startsWith("https://")) _mcps.value += McpServer(name = name, endpoint = endpoint) }
     fun toggleMcp(id: String) { _mcps.value = _mcps.value.map { if (it.id == id) it.copy(enabled = !it.enabled) else it } }
-    fun installSkill(id: String) { _skills.value = _skills.value.map { if (it.id == id) it.copy(installed = true) else it } }
-    fun toggleSkill(id: String) { _skills.value = _skills.value.map { if (it.id == id) it.copy(enabled = !it.enabled) else it } }
-    fun downloadSkill(skill: Skill, context: Context) {
-        val request = android.app.DownloadManager.Request(Uri.parse(skill.downloadUrl))
-            .setTitle(skill.name).setDescription("下载 Skill 到本机")
-            .setNotificationVisibility(android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-            .setDestinationInExternalPublicDir(android.os.Environment.DIRECTORY_DOWNLOADS, "LocalAI-Skills/${skill.id}.md")
-        (context.getSystemService(Context.DOWNLOAD_SERVICE) as android.app.DownloadManager).enqueue(request)
-        installSkill(skill.id)
+    fun toggleSkill(id: String) { _skills.value = _skills.value.map { if (it.id == id) it.copy(enabled = !it.enabled) else it }; saveSkills() }
+    fun removeSkill(id: String) { _skills.value = _skills.value.filterNot { it.id == id }; saveSkills() }
+
+    fun searchSkills(query: String) {
+        if (query.isBlank()) return
+        _skillSearchState.value = "正在搜索 GitHub…"
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = runCatching {
+                val url = URL("https://api.github.com/search/repositories?q=${URLEncoder.encode("$query skill", "UTF-8")}&sort=stars&order=desc&per_page=12")
+                val connection = (url.openConnection() as HttpURLConnection).apply { setRequestProperty("Accept", "application/vnd.github+json"); setRequestProperty("User-Agent", "LocalAIAssistant") }
+                val items = JSONObject(connection.inputStream.readBytes().toString(Charsets.UTF_8)).getJSONArray("items")
+                List(items.length()) { i ->
+                    val item = items.getJSONObject(i)
+                    val htmlUrl = item.getString("html_url")
+                    val rawUrl = "https://raw.githubusercontent.com/${item.getString("full_name")}/${item.getString("default_branch")}/SKILL.md"
+                    Skill(item.getString("full_name"), item.getString("name"), item.optString("description", "GitHub 社区 Skill"), rawUrl, htmlUrl)
+                }
+            }
+            result.onSuccess { found ->
+                _skills.value = (_skills.value.filter { it.installed } + found).distinctBy { it.id }
+                _skillSearchState.value = "找到 ${found.size} 个候选。下载前会读取 SKILL.md。"
+            }.onFailure { _skillSearchState.value = "搜索失败：${it.message ?: "请检查网络"}" }
+        }
+    }
+
+    fun downloadSkill(skill: Skill) {
+        _skillSearchState.value = "正在读取 ${skill.name} 的 SKILL.md…"
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                val connection = (URL(skill.downloadUrl).openConnection() as HttpURLConnection).apply { setRequestProperty("User-Agent", "LocalAIAssistant"); connectTimeout = 15_000; readTimeout = 20_000 }
+                require(connection.responseCode in 200..299) { "未找到根目录 SKILL.md" }
+                connection.inputStream.readBytes().toString(Charsets.UTF_8).also { require(it.length <= 100_000) { "SKILL.md 过大" } }
+            }.onSuccess { content ->
+                val directory = java.io.File(getApplication<Application>().filesDir, "skills").apply { mkdirs() }
+                java.io.File(directory, "${skill.id.replace('/', '_')}.md").writeText(content, Charsets.UTF_8)
+                _skills.value = _skills.value.map { if (it.id == skill.id) it.copy(content = content, installed = true) else it }
+                saveSkills(); _skillSearchState.value = "已下载到应用私有目录，可启用使用。"
+            }.onFailure { _skillSearchState.value = "安装失败：${it.message ?: "不是兼容的 Skill"}" }
+        }
     }
     fun saveSettings(settings: ApiSettings) {
         _settings.value = settings
@@ -263,7 +302,9 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
 
     private suspend fun requestCompletion(settings: ApiSettings, user: ChatMessage): Completion = withContext(Dispatchers.IO) {
         val url = URL("${settings.baseUrl.trimEnd('/')}/chat/completions")
-        val requestMessages = JSONArray().put(JSONObject().put("role", "system").put("content", _activePersona.value.prompt))
+        val skillInstructions = _skills.value.filter { it.installed && it.enabled && it.content.isNotBlank() }.joinToString("\n\n") { "已启用 Skill：${it.name}\n${it.content}" }
+        val systemPrompt = listOf(_activePersona.value.prompt, skillInstructions).filter { it.isNotBlank() }.joinToString("\n\n")
+        val requestMessages = JSONArray().put(JSONObject().put("role", "system").put("content", systemPrompt))
         _messages.value.filter { it.id != user.id }.takeLast(12).forEach { message ->
             requestMessages.put(JSONObject().put("role", if (message.sender == Sender.USER) "user" else "assistant").put("content", message.content))
         }

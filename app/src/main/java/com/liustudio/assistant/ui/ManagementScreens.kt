@@ -37,13 +37,15 @@ import com.liustudio.assistant.data.*
 @Composable private fun PersonaDialog(confirm: (String, String) -> Unit, dismiss: () -> Unit) { var name by remember { mutableStateOf("") }; var prompt by remember { mutableStateOf("") }; AlertDialog(onDismissRequest = dismiss, title = { Text("新建人设") }, text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { OutlinedTextField(name, { name = it }, label = { Text("名称") }); OutlinedTextField(prompt, { prompt = it }, label = { Text("系统提示词") }, minLines = 3) } }, confirmButton = { TextButton({ confirm(name, prompt) }, enabled = name.isNotBlank() && prompt.isNotBlank()) { Text("保存") } }, dismissButton = { TextButton(dismiss) { Text("取消") } }) }
 
 @Composable fun McpScreen(vm: AssistantViewModel) {
-    val mcps by vm.mcps.collectAsState(); val skills by vm.skills.collectAsState(); var dialog by remember { mutableStateOf(false) }; val context = androidx.compose.ui.platform.LocalContext.current
+    val mcps by vm.mcps.collectAsState(); val skills by vm.skills.collectAsState(); val skillState by vm.skillSearchState.collectAsState(); var dialog by remember { mutableStateOf(false) }; var search by remember { mutableStateOf("") }
     Column(Modifier.fillMaxSize()) {
-        AppHeader("MCP 与 Skill", "官方目录 + 本地下载；高风险调用必须确认") { IconButton({ dialog = true }) { Icon(Icons.Default.Add, "添加 MCP") } }
+        AppHeader("MCP 与 Skill", "搜索 GitHub 社区库；仅解析 SKILL.md 指令") { IconButton({ dialog = true }) { Icon(Icons.Default.Add, "添加 MCP") } }
+        Row(Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) { OutlinedTextField(search, { search = it }, label = { Text("搜索 GitHub Skill") }, modifier = Modifier.weight(1f), singleLine = true); IconButton({ vm.searchSkills(search) }, enabled = search.isNotBlank()) { Icon(Icons.Default.Search, "搜索") } }
+        Text(skillState, Modifier.padding(horizontal = 20.dp, vertical = 6.dp), style = MaterialTheme.typography.labelSmall, color = Color.Gray)
         LazyColumn(Modifier.padding(horizontal = 16.dp)) {
-            item { Text("官方 Skill 目录", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(vertical = 8.dp)) }
+            item { Text("Skill 搜索结果与已安装内容", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(vertical = 8.dp)) }
             items(skills, key = { it.id }) { skill ->
-                ListItem(headlineContent = { Text(skill.name, fontWeight = FontWeight.Medium) }, supportingContent = { Text(skill.description) }, leadingContent = { Icon(Icons.Default.AutoAwesome, null, tint = Blue) }, trailingContent = { Row(verticalAlignment = Alignment.CenterVertically) { if (!skill.installed) TextButton({ vm.downloadSkill(skill, context) }) { Text("下载") } else Switch(skill.enabled, { vm.toggleSkill(skill.id) }) } }); HorizontalDivider()
+                ListItem(headlineContent = { Text(skill.name, fontWeight = FontWeight.Medium) }, supportingContent = { Text(skill.description, maxLines = 2) }, leadingContent = { Icon(Icons.Default.AutoAwesome, null, tint = Blue) }, trailingContent = { Row(verticalAlignment = Alignment.CenterVertically) { if (!skill.installed) TextButton({ vm.downloadSkill(skill) }) { Text("安装") } else { Switch(skill.enabled, { vm.toggleSkill(skill.id) }); IconButton({ vm.removeSkill(skill.id) }) { Icon(Icons.Default.DeleteOutline, "卸载") } } } }); HorizontalDivider()
             }
             item { Spacer(Modifier.height(16.dp)); Text("已配置 MCP", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(vertical = 8.dp)) }
             if (mcps.isEmpty()) item { Text("暂无 MCP。点击右上角添加 HTTPS Server。", color = Color.Gray, modifier = Modifier.padding(vertical = 8.dp)) }
