@@ -132,7 +132,7 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
                         parser.setInput(zip, "UTF-8")
                         while (parser.next() != XmlPullParser.END_DOCUMENT) {
                             if (parser.eventType == XmlPullParser.TEXT) result.append(parser.text)
-                            if (result.length > 500_000) return result.take(500_000)
+                            if (result.length > 500_000) return result.take(500_000).toString()
                         }
                     }
                     zip.closeEntry()
