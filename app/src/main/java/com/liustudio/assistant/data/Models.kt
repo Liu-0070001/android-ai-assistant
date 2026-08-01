@@ -3,6 +3,14 @@ package com.liustudio.assistant.data
 import java.util.UUID
 
 enum class Sender { USER, ASSISTANT }
+enum class SourceKind { KNOWLEDGE, WEB }
+
+data class MessageSource(
+    val title: String,
+    val detail: String = "",
+    val uri: String = "",
+    val kind: SourceKind
+)
 
 data class ChatMessage(
     val id: String = UUID.randomUUID().toString(),
@@ -10,7 +18,7 @@ data class ChatMessage(
     val content: String,
     val timestamp: Long = System.currentTimeMillis(),
     val attachments: List<Attachment> = emptyList(),
-    val sources: List<String> = emptyList()
+    val sources: List<MessageSource> = emptyList()
 )
 
 data class Attachment(
@@ -31,7 +39,7 @@ data class KnowledgeDocument(
 )
 data class Persona(val id: String = UUID.randomUUID().toString(), val name: String, val prompt: String, val icon: String = "✦", val official: Boolean = false)
 data class McpServer(val id: String = UUID.randomUUID().toString(), val name: String, val endpoint: String, val enabled: Boolean = false)
-data class Completion(val content: String, val sources: List<String> = emptyList())
+data class Completion(val content: String, val sources: List<MessageSource> = emptyList())
 data class Skill(
     val id: String,
     val name: String,

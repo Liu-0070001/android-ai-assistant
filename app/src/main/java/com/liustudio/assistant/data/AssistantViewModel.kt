@@ -3,6 +3,7 @@ package com.liustudio.assistant.data
 import android.app.Application
 import android.content.Context
 import android.net.Uri
+import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.security.crypto.EncryptedSharedPreferences
@@ -65,13 +66,31 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
     private fun loadMessages(): List<ChatMessage> = runCatching {
         val array = JSONArray(localPrefs.getString("messages", "[]"))
         List(array.length()) { index -> array.getJSONObject(index).let { item ->
-            ChatMessage(id = item.getString("id"), sender = Sender.valueOf(item.getString("sender")), content = item.getString("content"), timestamp = item.getLong("timestamp"))
+            val sources = item.optJSONArray("sources")?.let { sourceArray ->
+                List(sourceArray.length()) { sourceIndex ->
+                    sourceArray.getJSONObject(sourceIndex).let { source ->
+                        MessageSource(
+                            title = source.getString("title"),
+                            detail = source.optString("detail"),
+                            uri = source.optString("uri"),
+                            kind = SourceKind.valueOf(source.optString("kind", SourceKind.WEB.name))
+                        )
+                    }
+                }
+            }.orEmpty()
+            ChatMessage(id = item.getString("id"), sender = Sender.valueOf(item.getString("sender")), content = item.getString("content"), timestamp = item.getLong("timestamp"), sources = sources)
         } }
     }.getOrDefault(emptyList())
 
     private fun saveMessages() {
         val array = JSONArray()
-        _messages.value.forEach { message -> array.put(JSONObject().put("id", message.id).put("sender", message.sender.name).put("content", message.content).put("timestamp", message.timestamp)) }
+        _messages.value.forEach { message ->
+            val sources = JSONArray()
+            message.sources.forEach { source ->
+                sources.put(JSONObject().put("title", source.title).put("detail", source.detail).put("uri", source.uri).put("kind", source.kind.name))
+            }
+            array.put(JSONObject().put("id", message.id).put("sender", message.sender.name).put("content", message.content).put("timestamp", message.timestamp).put("sources", sources))
+        }
         localPrefs.edit().putString("messages", array.toString()).apply()
     }
 
@@ -100,15 +119,54 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
     fun addKnowledge(uri: Uri) {
         val context = getApplication<Application>()
         runCatching { context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) }
-        val name = context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+        val name = displayName(uri)
+        viewModelScope.launch(Dispatchers.IO) {
+            val text = runCatching { extractKnowledgeText(uri, name) }.getOrElse { "[无法解析：${it.message ?: "文件格式不受支持"}]" }
+            _knowledge.value = (_knowledge.value + KnowledgeDocument(name = name, uri = uri.toString(), text = text)).distinctBy { it.uri }
+            saveKnowledge()
+        }
+    }
+
+    fun addKnowledgeFolder(uri: Uri) {
+        val context = getApplication<Application>()
+        runCatching { context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+        viewModelScope.launch(Dispatchers.IO) {
+            val root = DocumentFile.fromTreeUri(context, uri) ?: return@launch
+            val files = collectSupportedFiles(root).take(100)
+            val imported = files.map { file ->
+                val text = runCatching { extractKnowledgeText(file.uri, file.name ?: "未命名文件") }
+                    .getOrElse { "[无法解析：${it.message ?: "文件格式不受支持"}]" }
+                KnowledgeDocument(name = file.name ?: "未命名文件", uri = file.uri.toString(), text = text)
+            }
+            _knowledge.value = (_knowledge.value + imported).distinctBy { it.uri }
+            saveKnowledge()
+        }
+    }
+
+    private fun collectSupportedFiles(directory: DocumentFile): List<DocumentFile> {
+        val result = mutableListOf<DocumentFile>()
+        val pending = ArrayDeque<DocumentFile>().apply { add(directory) }
+        var visited = 0
+        while (pending.isNotEmpty() && result.size < 100 && visited < 500) {
+            val current = pending.removeFirst()
+            visited++
+            current.listFiles().forEach { child ->
+                if (child.isDirectory) pending.add(child)
+                else if (child.isFile && isSupportedKnowledgeFile(child.name.orEmpty(), child.type.orEmpty())) result += child
+            }
+        }
+        return result
+    }
+
+    private fun isSupportedKnowledgeFile(name: String, type: String): Boolean =
+        type.startsWith("text/") || listOf(".md", ".json", ".csv", ".pdf", ".docx").any { name.endsWith(it, true) }
+
+    private fun displayName(uri: Uri): String {
+        val context = getApplication<Application>()
+        return context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
             val index = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
             if (cursor.moveToFirst() && index >= 0) cursor.getString(index) else uri.lastPathSegment
         } ?: uri.lastPathSegment ?: "未命名文件"
-        viewModelScope.launch(Dispatchers.IO) {
-            val text = runCatching { extractKnowledgeText(uri, name) }.getOrElse { "[无法解析：${it.message ?: "文件格式不受支持"}]" }
-            _knowledge.value += KnowledgeDocument(name = name, uri = uri.toString(), text = text)
-            saveKnowledge()
-        }
     }
 
     private fun extractKnowledgeText(uri: Uri, name: String): String {
@@ -241,21 +299,8 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    private fun retrieveKnowledge(query: String): String {
-        val tokens = query.lowercase().split(Regex("[^\\p{L}\\p{N}]+|(?<=\\p{IsHan})(?=\\p{IsHan})")).filter { it.length > 1 }.toSet()
-        return _knowledge.value.mapNotNull { document ->
-            val text = document.text
-            if (text.startsWith("[无法解析") || text.isBlank()) return@mapNotNull null
-            val normalized = text.lowercase()
-            val score = tokens.sumOf { token -> Regex(Regex.escape(token)).findAll(normalized).count() }
-            if (score == 0) return@mapNotNull null
-            val index = tokens.map { normalized.indexOf(it) }.firstOrNull { it >= 0 } ?: 0
-            val start = (index - 400).coerceAtLeast(0)
-            val end = (index + 1_600).coerceAtMost(text.length)
-            Triple(score, document.name, text.substring(start, end))
-        }.sortedByDescending { it.first }.take(4)
-            .joinToString("\n\n") { (_, name, excerpt) -> "[$name]\n$excerpt" }
-    }
+    private fun retrieveKnowledge(query: String): KnowledgeRetrieval =
+        KnowledgeRetriever.retrieve(query, _knowledge.value)
 
     private fun buildMultimodalContent(prompt: String, attachments: List<Attachment>): Any {
         if (attachments.isEmpty()) return prompt
@@ -308,12 +353,15 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
         _messages.value.filter { it.id != user.id }.takeLast(12).forEach { message ->
             requestMessages.put(JSONObject().put("role", if (message.sender == Sender.USER) "user" else "assistant").put("content", message.content))
         }
-        val knowledgeContext = retrieveKnowledge(user.content)
-        val webResults = if (settings.autoWebSearch && knowledgeContext.isBlank()) runCatching { searchWeb(user.content) }.getOrDefault(emptyList()) else emptyList()
+        val knowledge = retrieveKnowledge(user.content)
+        val webResults = if (settings.autoWebSearch && !knowledge.hasStrongMatch) runCatching { searchWeb(user.content) }.getOrDefault(emptyList()) else emptyList()
         val prompt = buildString {
             append(user.content)
-            if (knowledgeContext.isNotBlank()) append("\n\n本地知识库检索结果（引用回答时标明文件名）：\n$knowledgeContext")
-            if (webResults.isNotEmpty()) append("\n\n联网搜索结果（只可依据以下摘要回答，并引用网址）：\n" + webResults.joinToString("\n") { "${it.first}\n${it.second}" })
+            if (knowledge.context.isNotBlank()) {
+                append("\n\n本地知识库检索结果：\n${knowledge.context}")
+                append("\n\n回答要求：优先依据高相关本地片段；引用本地资料时标明【文件名 · 片段编号】；资料只部分相关时明确证据边界，不要把低相关片段当作确定答案。")
+            }
+            if (webResults.isNotEmpty()) append("\n\n本地资料不足，以下是联网搜索摘要。只可依据摘要回答，并标明网址：\n" + webResults.joinToString("\n") { "${it.first}\n${it.second}" })
         }
         requestMessages.put(JSONObject().put("role", "user").put("content", buildMultimodalContent(prompt, user.attachments)))
         val connection = (url.openConnection() as HttpURLConnection).apply {
@@ -337,7 +385,14 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
         }
         Completion(
             content = payload.getJSONArray("choices").getJSONObject(0).getJSONObject("message").optString("content", "模型未返回文本"),
-            sources = webResults.map { it.first }
+            sources = knowledge.references + webResults.map { (url, summary) ->
+                MessageSource(
+                    title = runCatching { URL(url).host }.getOrDefault("联网来源"),
+                    detail = summary.take(120),
+                    uri = url,
+                    kind = SourceKind.WEB
+                )
+            }
         )
     }
 }
