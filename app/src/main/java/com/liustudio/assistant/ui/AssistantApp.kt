@@ -7,6 +7,8 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.text.method.LinkMovementMethod
 import android.util.Base64
+import android.view.ViewGroup
+import android.widget.HorizontalScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -565,21 +567,72 @@ private fun RichMessageText(content: String) {
     val context = LocalContext.current
     val density = LocalDensity.current
     val textColor = LocalContentColor.current.toArgb()
-    val formulaTextSize = with(density) { 16.sp.toPx() }
-    val markwon = remember(context, formulaTextSize, textColor) {
+    val inlineFormulaSize = with(density) { 16.sp.toPx() }
+    val blockFormulaSize = with(density) { 18.sp.toPx() }
+    val markwon = remember(context, inlineFormulaSize, blockFormulaSize, textColor) {
         Markwon.builder(context)
             .usePlugin(SoftBreakAddsNewLinePlugin.create())
             .usePlugin(MarkwonInlineParserPlugin.create())
             .usePlugin(
-                JLatexMathPlugin.create(formulaTextSize) { builder ->
+                JLatexMathPlugin.create(inlineFormulaSize, blockFormulaSize) { builder ->
                     builder.inlinesEnabled(true)
+                    builder.theme().blockFitCanvas(false)
                     builder.theme().textColor(textColor)
                 }
             )
             .build()
     }
-    val markdown = remember(content) { normalizeLatexDelimiters(content) }
+    val blocks = remember(content) { parseMessageBlocks(content) }
 
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        blocks.forEach { block ->
+            if (block.isFormula) {
+                FormulaLine(
+                    latex = block.content,
+                    markwon = markwon,
+                    textColor = textColor
+                )
+            } else {
+                MarkdownText(
+                    markdown = normalizeLatexDelimiters(block.content),
+                    markwon = markwon,
+                    textColor = textColor
+                )
+            }
+        }
+    }
+}
+
+private data class MessageRenderBlock(val content: String, val isFormula: Boolean)
+
+private val blockFormulaPattern = Regex(
+    """\\\[(.*?)\\\]|\$\$(.*?)\$\$""",
+    RegexOption.DOT_MATCHES_ALL
+)
+
+private fun parseMessageBlocks(content: String): List<MessageRenderBlock> {
+    val blocks = mutableListOf<MessageRenderBlock>()
+    var start = 0
+    blockFormulaPattern.findAll(content).forEach { match ->
+        if (match.range.first > start) {
+            content.substring(start, match.range.first)
+                .takeIf { it.isNotBlank() }
+                ?.let { blocks += MessageRenderBlock(it.trim('\n'), false) }
+        }
+        val latex = match.groupValues[1].ifBlank { match.groupValues[2] }.trim()
+        if (latex.isNotBlank()) blocks += MessageRenderBlock(latex, true)
+        start = match.range.last + 1
+    }
+    if (start < content.length) {
+        content.substring(start)
+            .takeIf { it.isNotBlank() }
+            ?.let { blocks += MessageRenderBlock(it.trim('\n'), false) }
+    }
+    return blocks.ifEmpty { listOf(MessageRenderBlock(content, false)) }
+}
+
+@Composable
+private fun MarkdownText(markdown: String, markwon: Markwon, textColor: Int) {
     AndroidView(
         factory = { viewContext ->
             TextView(viewContext).apply {
@@ -593,6 +646,36 @@ private fun RichMessageText(content: String) {
         update = { textView ->
             textView.setTextColor(textColor)
             markwon.setMarkdown(textView, markdown)
+        },
+        modifier = Modifier.fillMaxWidth()
+    )
+}
+
+@Composable
+private fun FormulaLine(latex: String, markwon: Markwon, textColor: Int) {
+    AndroidView(
+        factory = { viewContext ->
+            HorizontalScrollView(viewContext).apply {
+                isFillViewport = false
+                isHorizontalScrollBarEnabled = true
+                addView(
+                    TextView(viewContext).apply {
+                        textSize = 18f
+                        includeFontPadding = false
+                        setTextColor(textColor)
+                        setHorizontallyScrolling(true)
+                    },
+                    ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT
+                    )
+                )
+            }
+        },
+        update = { scrollView ->
+            val textView = scrollView.getChildAt(0) as TextView
+            textView.setTextColor(textColor)
+            markwon.setMarkdown(textView, "\$\$\n$latex\n\$\$")
         },
         modifier = Modifier.fillMaxWidth()
     )
