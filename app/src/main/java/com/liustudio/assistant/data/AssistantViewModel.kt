@@ -315,6 +315,41 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
         )
         saveMessages()
     }
+
+    fun discoverModels(baseUrl: String, apiKey: String, onSuccess: (List<String>) -> Unit, onFailure: (String) -> Unit) {
+        val base = baseUrl.trim().trimEnd('/')
+        if (base.isBlank() || apiKey.isBlank()) {
+            onFailure("请先填写 API 地址和 API Key")
+            return
+        }
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val connection = (URL("$base/models").openConnection() as HttpURLConnection).apply {
+                        requestMethod = "GET"
+                        connectTimeout = 10_000
+                        readTimeout = 20_000
+                        setRequestProperty("Accept", "application/json")
+                        setRequestProperty("Authorization", "Bearer $apiKey")
+                    }
+                    val stream = if (connection.responseCode in 200..299) connection.inputStream else connection.errorStream
+                    val response = stream?.readBytes()?.toString(Charsets.UTF_8).orEmpty()
+                    if (connection.responseCode !in 200..299) {
+                        throw IllegalStateException("HTTP ${connection.responseCode}：${response.take(200)}")
+                    }
+                    val data = runCatching { JSONObject(response).optJSONArray("data") }
+                        .getOrNull()
+                        ?: throw IllegalStateException("接口未返回标准模型列表，请确认这是 OpenAI 兼容的 API 地址")
+                    List(data.length()) { data.optJSONObject(it)?.optString("id", "").orEmpty() }
+                        .filter { it.isNotBlank() }
+                        .distinct()
+                }
+            }
+            result.onSuccess { models ->
+                if (models.isEmpty()) onFailure("已连通但没有发现可用模型") else onSuccess(models)
+            }.onFailure { onFailure(it.message ?: "探查失败，请检查地址和 Key") }
+        }
+    }
     fun deleteMessage(id: String) { _messages.value = _messages.value.filterNot { it.id == id }; saveMessages() }
     fun deleteFrom(id: String) { _messages.value = _messages.value.takeWhile { it.id != id }; saveMessages() }
 
@@ -347,16 +382,25 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
                     configured.visionBaseUrl.isNotBlank() &&
                     configured.visionModel.isNotBlank() &&
                     configured.visionApiKey.isNotBlank()
-                val recognized = if (hasImage && hasVisionModel) {
-                    recognizeProblem(configured, attachments)
-                } else {
-                    ""
+                var recognized = ""
+                var visionWarning = ""
+                if (hasImage && hasVisionModel) {
+                    recognized = try {
+                        recognizeProblem(configured, attachments)
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (error: Exception) {
+                        visionWarning = "识图模型调用失败：${error.message ?: "请检查识图模型配置"}。已改为直接把图片发送给文本模型。\n\n"
+                        ""
+                    }
                 }
                 val completion = requestCompletion(configured, user, recognized)
-                val content = if (recognized.isBlank()) {
-                    completion.content
-                } else {
-                    "【识别到的题目】\n$recognized\n\n---\n\n${completion.content}"
+                val content = buildString {
+                    append(visionWarning)
+                    if (recognized.isNotBlank()) {
+                        append("【识别到的题目】\n$recognized\n\n---\n\n")
+                    }
+                    append(completion.content)
                 }
                 _messages.value += ChatMessage(sender = Sender.ASSISTANT, content = content, sources = completion.sources)
                 saveMessages()

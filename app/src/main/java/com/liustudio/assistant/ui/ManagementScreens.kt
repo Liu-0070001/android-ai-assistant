@@ -22,6 +22,7 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.HourglassTop
 import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Search
@@ -438,7 +439,40 @@ fun SettingsScreen(vm: AssistantViewModel) {
     var visionModel by remember(saved) { mutableStateOf(saved.visionModel) }
     var visionKey by remember(saved) { mutableStateOf(saved.visionApiKey) }
     var revealVisionKey by remember { mutableStateOf(false) }
+    var discoveringText by remember { mutableStateOf(false) }
+    var textModelOptions by remember { mutableStateOf<List<String>>(emptyList()) }
+    var showTextModelPicker by remember { mutableStateOf(false) }
+    var discoveringVision by remember { mutableStateOf(false) }
+    var visionModelOptions by remember { mutableStateOf<List<String>>(emptyList()) }
+    var showVisionModelPicker by remember { mutableStateOf(false) }
+    var discoverError by remember { mutableStateOf("") }
     val context = LocalContext.current
+
+    fun probeTextModels() {
+        discoverError = ""
+        discoveringText = true
+        vm.discoverModels(baseUrl, key, onSuccess = { list ->
+            textModelOptions = list
+            discoveringText = false
+            showTextModelPicker = true
+        }, onFailure = { msg ->
+            discoveringText = false
+            discoverError = msg
+        })
+    }
+
+    fun probeVisionModels() {
+        discoverError = ""
+        discoveringVision = true
+        vm.discoverModels(visionBaseUrl, visionKey, onSuccess = { list ->
+            visionModelOptions = list
+            discoveringVision = false
+            showVisionModelPicker = true
+        }, onFailure = { msg ->
+            discoveringVision = false
+            discoverError = msg
+        })
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
         AppHeader("设置", "配置仅保存在当前设备")
@@ -465,6 +499,17 @@ fun SettingsScreen(vm: AssistantViewModel) {
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true
             )
+            OutlinedButton(
+                onClick = { probeTextModels() },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !discoveringText && baseUrl.isNotBlank() && key.isNotBlank()
+            ) {
+                Icon(
+                    imageVector = if (discoveringText) Icons.Default.HourglassTop else Icons.Default.Search,
+                    contentDescription = null
+                )
+                Text(if (discoveringText) "正在探查可用模型…" else "探查可用模型", modifier = Modifier.padding(start = 8.dp))
+            }
             OutlinedTextField(
                 value = key,
                 onValueChange = { key = it },
@@ -532,6 +577,17 @@ fun SettingsScreen(vm: AssistantViewModel) {
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true
                 )
+                OutlinedButton(
+                    onClick = { probeVisionModels() },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !discoveringVision && visionBaseUrl.isNotBlank() && visionKey.isNotBlank()
+                ) {
+                    Icon(
+                        imageVector = if (discoveringVision) Icons.Default.HourglassTop else Icons.Default.Search,
+                        contentDescription = null
+                    )
+                    Text(if (discoveringVision) "正在探查可用模型…" else "探查可用模型", modifier = Modifier.padding(start = 8.dp))
+                }
                 OutlinedTextField(
                     value = visionKey,
                     onValueChange = { visionKey = it },
@@ -580,9 +636,72 @@ fun SettingsScreen(vm: AssistantViewModel) {
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            if (discoverError.isNotBlank()) {
+                Text(
+                    text = "探查失败：$discoverError",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
             Spacer(modifier = Modifier.height(12.dp))
         }
     }
+
+    if (showTextModelPicker && textModelOptions.isNotEmpty()) {
+        ModelPickerDialog(
+            title = "选择文本模型",
+            models = textModelOptions,
+            onSelect = { selected ->
+                model = selected
+                showTextModelPicker = false
+            },
+            onDismiss = { showTextModelPicker = false }
+        )
+    }
+    if (showVisionModelPicker && visionModelOptions.isNotEmpty()) {
+        ModelPickerDialog(
+            title = "选择识图模型",
+            models = visionModelOptions,
+            onSelect = { selected ->
+                visionModel = selected
+                showVisionModelPicker = false
+            },
+            onDismiss = { showVisionModelPicker = false }
+        )
+    }
+}
+
+@Composable
+private fun ModelPickerDialog(
+    title: String,
+    models: List<String>,
+    onSelect: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            LazyColumn(
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                items(models, key = { it }) { modelId ->
+                    TextButton(
+                        onClick = { onSelect(modelId) },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = modelId,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } }
+    )
 }
 
 @Composable

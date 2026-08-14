@@ -323,7 +323,7 @@ private fun ThinkingIndicator() {
         ) {
             CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
             Text(
-                text = "正在整理回答",
+                text = "正在识题与讲解…",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.bodyMedium
             )
