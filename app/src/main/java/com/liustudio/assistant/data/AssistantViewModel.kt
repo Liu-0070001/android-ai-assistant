@@ -3,14 +3,19 @@ package com.liustudio.assistant.data
 import android.app.Application
 import android.content.Context
 import android.net.Uri
+import android.util.Base64
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -18,7 +23,6 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
-import android.util.Base64
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.text.PDFTextStripper
@@ -62,6 +66,7 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
     val activePersona = _activePersona.asStateFlow()
     private val _loading = MutableStateFlow(false)
     val loading = _loading.asStateFlow()
+    private var completionJob: Job? = null
 
     private fun loadMessages(): List<ChatMessage> = runCatching {
         val array = JSONArray(localPrefs.getString("messages", "[]"))
@@ -261,9 +266,26 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
     fun saveSettings(settings: ApiSettings) {
-        _settings.value = settings
-        securePrefs.edit().putString("base_url", settings.baseUrl.trimEnd('/')).putString("model", settings.model)
-            .putString("api_key", settings.apiKey).putBoolean("auto_web_search", settings.autoWebSearch).apply()
+        val normalized = settings.copy(
+            baseUrl = settings.baseUrl.trim().trimEnd('/'),
+            model = settings.model.trim(),
+            apiKey = settings.apiKey.trim()
+        )
+        _settings.value = normalized
+        securePrefs.edit().putString("base_url", normalized.baseUrl).putString("model", normalized.model)
+            .putString("api_key", normalized.apiKey).putBoolean("auto_web_search", normalized.autoWebSearch).apply()
+    }
+    fun clearConversation() {
+        completionJob?.cancel()
+        completionJob = null
+        _loading.value = false
+        _messages.value = listOf(
+            ChatMessage(
+                sender = Sender.ASSISTANT,
+                content = "你好，我是本地智伴。添加资料、拍照，或直接开始提问。"
+            )
+        )
+        saveMessages()
     }
     fun deleteMessage(id: String) { _messages.value = _messages.value.filterNot { it.id == id }; saveMessages() }
     fun deleteFrom(id: String) { _messages.value = _messages.value.takeWhile { it.id != id }; saveMessages() }
@@ -279,7 +301,7 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun send(text: String, attachments: List<Attachment> = emptyList()) {
-        if (text.isBlank() && attachments.isEmpty()) return
+        if (_loading.value || (text.isBlank() && attachments.isEmpty())) return
         val user = ChatMessage(sender = Sender.USER, content = text, attachments = attachments)
         _messages.value += user
         saveMessages()
@@ -290,12 +312,22 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
             return
         }
         _loading.value = true
-        viewModelScope.launch {
-            val result = runCatching { requestCompletion(configured, user) }
-            val completion = result.getOrElse { Completion("请求失败：${it.message ?: "请检查网络和 API 配置"}") }
-            _messages.value += ChatMessage(sender = Sender.ASSISTANT, content = completion.content, sources = completion.sources)
-            saveMessages()
-            _loading.value = false
+        completionJob = viewModelScope.launch {
+            try {
+                val completion = requestCompletion(configured, user)
+                _messages.value += ChatMessage(sender = Sender.ASSISTANT, content = completion.content, sources = completion.sources)
+                saveMessages()
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                _messages.value += ChatMessage(sender = Sender.ASSISTANT, content = "请求失败：${error.message ?: "请检查网络和 API 配置"}")
+                saveMessages()
+            } finally {
+                if (completionJob == currentCoroutineContext().job) {
+                    completionJob = null
+                    _loading.value = false
+                }
+            }
         }
     }
 
