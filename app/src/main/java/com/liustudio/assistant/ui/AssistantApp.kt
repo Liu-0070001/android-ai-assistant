@@ -5,12 +5,13 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.Bitmap
+import android.text.method.LinkMovementMethod
 import android.util.Base64
+import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,7 +30,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
@@ -52,6 +52,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -70,12 +71,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.liustudio.assistant.data.AssistantViewModel
 import com.liustudio.assistant.data.Attachment
@@ -83,6 +87,10 @@ import com.liustudio.assistant.data.AttachmentKind
 import com.liustudio.assistant.data.ChatMessage
 import com.liustudio.assistant.data.Sender
 import com.liustudio.assistant.data.SourceKind
+import io.noties.markwon.Markwon
+import io.noties.markwon.SoftBreakAddsNewLinePlugin
+import io.noties.markwon.ext.latex.JLatexMathPlugin
+import io.noties.markwon.inlineparser.MarkwonInlineParserPlugin
 import java.io.ByteArrayOutputStream
 
 val Blue = Color(0xFF275DAD)
@@ -556,29 +564,49 @@ private fun MessageBubble(
 
 @Composable
 private fun RichMessageText(content: String) {
-    val blocks = content.split("```")
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        blocks.forEachIndexed { index, block ->
-            if (index % 2 == 1) {
-                Surface(
-                    color = MaterialTheme.colorScheme.surfaceVariant,
-                    shape = RoundedCornerShape(6.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState())
-                ) {
-                    Text(
-                        text = block.trim(),
-                        modifier = Modifier.padding(10.dp),
-                        fontFamily = FontFamily.Monospace,
-                        softWrap = false
-                    )
+    val context = LocalContext.current
+    val density = LocalDensity.current
+    val textColor = LocalContentColor.current.toArgb()
+    val formulaTextSize = with(density) { 16.sp.toPx() }
+    val markwon = remember(context, formulaTextSize, textColor) {
+        Markwon.builder(context)
+            .usePlugin(SoftBreakAddsNewLinePlugin.create())
+            .usePlugin(MarkwonInlineParserPlugin.create())
+            .usePlugin(
+                JLatexMathPlugin.create(formulaTextSize) { builder ->
+                    builder.inlinesEnabled(true)
+                    builder.theme().textColor(textColor)
                 }
-            } else {
-                block.lines().filter { it.isNotEmpty() }.forEach { line ->
-                    Text(text = line, modifier = Modifier.fillMaxWidth())
-                }
-            }
-        }
+            )
+            .build()
     }
+    val markdown = remember(content) { normalizeLatexDelimiters(content) }
+
+    AndroidView(
+        factory = { viewContext ->
+            TextView(viewContext).apply {
+                textSize = 16f
+                includeFontPadding = false
+                setTextColor(textColor)
+                setTextIsSelectable(true)
+                movementMethod = LinkMovementMethod.getInstance()
+            }
+        },
+        update = { textView ->
+            textView.setTextColor(textColor)
+            markwon.setMarkdown(textView, markdown)
+        },
+        modifier = Modifier.fillMaxWidth()
+    )
 }
+
+private fun normalizeLatexDelimiters(content: String): String = content
+    .replace(Regex("""\\\[\s*(.*?)\s*\\]""", RegexOption.DOT_MATCHES_ALL)) { match ->
+        "\$\$\n${match.groupValues[1]}\n\$\$"
+    }
+    .replace(Regex("""\\\((.*?)\\\)""")) { match ->
+        "\$\$${match.groupValues[1]}\$\$"
+    }
+    .replace(Regex("""(?<!\$)\$(?!\$)([^$\n]+?)\$(?!\$)""")) { match ->
+        "\$\$${match.groupValues[1]}\$\$"
+    }
