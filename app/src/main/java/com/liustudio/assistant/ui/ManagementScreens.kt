@@ -446,10 +446,15 @@ fun SettingsScreen(vm: AssistantViewModel) {
     var visionModelOptions by remember { mutableStateOf<List<String>>(emptyList()) }
     var showVisionModelPicker by remember { mutableStateOf(false) }
     var discoverError by remember { mutableStateOf("") }
+    var testingText by remember { mutableStateOf(false) }
+    var testingVision by remember { mutableStateOf(false) }
+    var connectionStatus by remember { mutableStateOf("") }
+    var connectionPassed by remember { mutableStateOf<Boolean?>(null) }
     val context = LocalContext.current
 
     fun probeTextModels() {
         discoverError = ""
+        connectionStatus = ""
         discoveringText = true
         vm.discoverModels(baseUrl, key, onSuccess = { list ->
             textModelOptions = list
@@ -463,6 +468,7 @@ fun SettingsScreen(vm: AssistantViewModel) {
 
     fun probeVisionModels() {
         discoverError = ""
+        connectionStatus = ""
         discoveringVision = true
         vm.discoverModels(visionBaseUrl, visionKey, onSuccess = { list ->
             visionModelOptions = list
@@ -486,30 +492,15 @@ fun SettingsScreen(vm: AssistantViewModel) {
             Text("AI 服务", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             OutlinedTextField(
                 value = baseUrl,
-                onValueChange = { baseUrl = it },
+                onValueChange = {
+                    baseUrl = it
+                    model = ""
+                },
                 label = { Text("兼容 API 地址") },
                 placeholder = { Text("https://api.example.com/v1") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true
             )
-            OutlinedTextField(
-                value = model,
-                onValueChange = { model = it },
-                label = { Text("模型名称") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true
-            )
-            OutlinedButton(
-                onClick = { probeTextModels() },
-                modifier = Modifier.fillMaxWidth(),
-                enabled = !discoveringText && baseUrl.isNotBlank() && key.isNotBlank()
-            ) {
-                Icon(
-                    imageVector = if (discoveringText) Icons.Default.HourglassTop else Icons.Default.Search,
-                    contentDescription = null
-                )
-                Text(if (discoveringText) "正在探查可用模型…" else "探查可用模型", modifier = Modifier.padding(start = 8.dp))
-            }
             OutlinedTextField(
                 value = key,
                 onValueChange = { key = it },
@@ -530,6 +521,45 @@ fun SettingsScreen(vm: AssistantViewModel) {
                     }
                 }
             )
+            OutlinedButton(
+                onClick = { probeTextModels() },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !discoveringText && baseUrl.isNotBlank() && key.isNotBlank()
+            ) {
+                Icon(
+                    imageVector = if (discoveringText) Icons.Default.HourglassTop else Icons.Default.Search,
+                    contentDescription = null
+                )
+                Text(if (discoveringText) "正在探查可用模型…" else "探查并选择模型", modifier = Modifier.padding(start = 8.dp))
+            }
+            OutlinedTextField(
+                value = model,
+                onValueChange = {},
+                readOnly = true,
+                label = { Text("已选择的模型") },
+                placeholder = { Text("请先探查并选择模型") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+            OutlinedButton(
+                onClick = {
+                    connectionStatus = ""
+                    testingText = true
+                    vm.testModel(baseUrl, key, model, onSuccess = {
+                        testingText = false
+                        connectionPassed = true
+                        connectionStatus = it
+                    }, onFailure = {
+                        testingText = false
+                        connectionPassed = false
+                        connectionStatus = it
+                    })
+                },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !testingText && model.isNotBlank()
+            ) {
+                Text(if (testingText) "正在测试文本模型…" else "测试文本模型连接")
+            }
             HorizontalDivider()
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -564,30 +594,15 @@ fun SettingsScreen(vm: AssistantViewModel) {
             if (visionEnabled) {
                 OutlinedTextField(
                     value = visionBaseUrl,
-                    onValueChange = { visionBaseUrl = it },
+                    onValueChange = {
+                        visionBaseUrl = it
+                        visionModel = ""
+                    },
                     label = { Text("识图 API 地址") },
                     placeholder = { Text("https://api.example.com/v1") },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true
                 )
-                OutlinedTextField(
-                    value = visionModel,
-                    onValueChange = { visionModel = it },
-                    label = { Text("识图模型名称") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
-                )
-                OutlinedButton(
-                    onClick = { probeVisionModels() },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = !discoveringVision && visionBaseUrl.isNotBlank() && visionKey.isNotBlank()
-                ) {
-                    Icon(
-                        imageVector = if (discoveringVision) Icons.Default.HourglassTop else Icons.Default.Search,
-                        contentDescription = null
-                    )
-                    Text(if (discoveringVision) "正在探查可用模型…" else "探查可用模型", modifier = Modifier.padding(start = 8.dp))
-                }
                 OutlinedTextField(
                     value = visionKey,
                     onValueChange = { visionKey = it },
@@ -608,6 +623,45 @@ fun SettingsScreen(vm: AssistantViewModel) {
                         }
                     }
                 )
+                OutlinedButton(
+                    onClick = { probeVisionModels() },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !discoveringVision && visionBaseUrl.isNotBlank() && visionKey.isNotBlank()
+                ) {
+                    Icon(
+                        imageVector = if (discoveringVision) Icons.Default.HourglassTop else Icons.Default.Search,
+                        contentDescription = null
+                    )
+                    Text(if (discoveringVision) "正在探查可用模型…" else "探查并选择识图模型", modifier = Modifier.padding(start = 8.dp))
+                }
+                OutlinedTextField(
+                    value = visionModel,
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text("已选择的识图模型") },
+                    placeholder = { Text("请先探查并选择模型") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+                OutlinedButton(
+                    onClick = {
+                        connectionStatus = ""
+                        testingVision = true
+                        vm.testModel(visionBaseUrl, visionKey, visionModel, onSuccess = {
+                            testingVision = false
+                            connectionPassed = true
+                            connectionStatus = it
+                        }, onFailure = {
+                            testingVision = false
+                            connectionPassed = false
+                            connectionStatus = it
+                        })
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !testingVision && visionModel.isNotBlank()
+                ) {
+                    Text(if (testingVision) "正在测试识图模型…" else "测试识图模型连接")
+                }
             }
             Button(
                 onClick = {
@@ -641,6 +695,13 @@ fun SettingsScreen(vm: AssistantViewModel) {
                     text = "探查失败：$discoverError",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.error
+                )
+            }
+            if (connectionStatus.isNotBlank()) {
+                Text(
+                    text = connectionStatus,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (connectionPassed == true) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
                 )
             }
             Spacer(modifier = Modifier.height(12.dp))

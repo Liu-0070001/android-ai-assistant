@@ -21,6 +21,9 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
+import java.net.ConnectException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 import java.net.URL
 import java.net.URLEncoder
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
@@ -284,10 +287,10 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
     }
     fun saveSettings(settings: ApiSettings) {
         val normalized = settings.copy(
-            baseUrl = settings.baseUrl.trim().trimEnd('/'),
+            baseUrl = normalizeApiBaseUrl(settings.baseUrl),
             model = settings.model.trim(),
             apiKey = settings.apiKey.trim(),
-            visionBaseUrl = settings.visionBaseUrl.trim().trimEnd('/'),
+            visionBaseUrl = normalizeApiBaseUrl(settings.visionBaseUrl),
             visionModel = settings.visionModel.trim(),
             visionApiKey = settings.visionApiKey.trim()
         )
@@ -317,7 +320,7 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun discoverModels(baseUrl: String, apiKey: String, onSuccess: (List<String>) -> Unit, onFailure: (String) -> Unit) {
-        val base = baseUrl.trim().trimEnd('/')
+        val base = normalizeApiBaseUrl(baseUrl)
         if (base.isBlank() || apiKey.isBlank()) {
             onFailure("请先填写 API 地址和 API Key")
             return
@@ -347,8 +350,51 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
             }
             result.onSuccess { models ->
                 if (models.isEmpty()) onFailure("已连通但没有发现可用模型") else onSuccess(models)
-            }.onFailure { onFailure(it.message ?: "探查失败，请检查地址和 Key") }
+            }.onFailure { onFailure(readableRequestError(it)) }
         }
+    }
+
+    fun testModel(
+        baseUrl: String,
+        apiKey: String,
+        model: String,
+        onSuccess: (String) -> Unit,
+        onFailure: (String) -> Unit
+    ) {
+        if (baseUrl.isBlank() || apiKey.isBlank() || model.isBlank()) {
+            onFailure("请先填写 API 地址和 API Key，并通过探查选择模型")
+            return
+        }
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val messages = JSONArray().put(
+                        JSONObject().put("role", "user").put("content", "请只回复：连接成功")
+                    )
+                    val response = postCompletion(baseUrl, apiKey, model, messages, temperature = 0.0, readTimeoutMillis = 30_000)
+                    val content = JSONObject(response)
+                        .getJSONArray("choices")
+                        .getJSONObject(0)
+                        .getJSONObject("message")
+                        .optString("content")
+                    require(content.isNotBlank()) { "模型已响应，但没有返回文本内容" }
+                    content.take(80)
+                }
+            }
+            result.onSuccess { onSuccess("连接成功，模型返回：$it") }
+                .onFailure { onFailure(readableRequestError(it)) }
+        }
+    }
+
+    private fun normalizeApiBaseUrl(value: String): String = value.trim().trimEnd('/')
+        .removeSuffix("/chat/completions")
+        .removeSuffix("/models")
+
+    private fun readableRequestError(error: Throwable): String = when (error) {
+        is SocketTimeoutException -> "请求超时。服务在限定时间内没有响应，请检查 API 地址、网络或服务商状态"
+        is UnknownHostException -> "无法解析 API 域名，请检查地址拼写和网络连接"
+        is ConnectException -> "无法连接 API 服务，请检查地址、网络和服务商状态"
+        else -> error.message ?: "请求失败，请检查地址、Key 和模型配置"
     }
     fun deleteMessage(id: String) { _messages.value = _messages.value.filterNot { it.id == id }; saveMessages() }
     fun deleteFrom(id: String) { _messages.value = _messages.value.takeWhile { it.id != id }; saveMessages() }
@@ -390,7 +436,7 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
                     } catch (error: CancellationException) {
                         throw error
                     } catch (error: Exception) {
-                        visionWarning = "识图模型调用失败：${error.message ?: "请检查识图模型配置"}。已改为直接把图片发送给文本模型。\n\n"
+                        visionWarning = "识图模型调用失败：${readableRequestError(error)}。已改为直接把图片发送给文本模型。\n\n"
                         ""
                     }
                 }
@@ -407,7 +453,7 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
-                _messages.value += ChatMessage(sender = Sender.ASSISTANT, content = "请求失败：${error.message ?: "请检查网络和 API 配置"}")
+                _messages.value += ChatMessage(sender = Sender.ASSISTANT, content = "请求失败：${readableRequestError(error)}")
                 saveMessages()
             } finally {
                 if (completionJob == currentCoroutineContext().job) {
@@ -480,11 +526,12 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
         apiKey: String,
         model: String,
         messages: JSONArray,
-        temperature: Double
+        temperature: Double,
+        readTimeoutMillis: Int = 90_000
     ): String {
-        val url = URL("${baseUrl.trimEnd('/')}/chat/completions")
+        val url = URL("${normalizeApiBaseUrl(baseUrl)}/chat/completions")
         val connection = (url.openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"; doOutput = true; connectTimeout = 30_000; readTimeout = 90_000
+            requestMethod = "POST"; doOutput = true; connectTimeout = 30_000; readTimeout = readTimeoutMillis
             setRequestProperty("Content-Type", "application/json")
             setRequestProperty("Authorization", "Bearer $apiKey")
         }
