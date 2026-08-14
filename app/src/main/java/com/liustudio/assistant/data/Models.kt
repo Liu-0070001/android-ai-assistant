@@ -50,4 +50,13 @@ data class Skill(
     val installed: Boolean = false,
     val enabled: Boolean = false
 )
-data class ApiSettings(val baseUrl: String = "", val model: String = "", val apiKey: String = "", val autoWebSearch: Boolean = true)
+data class ApiSettings(
+    val baseUrl: String = "",
+    val model: String = "",
+    val apiKey: String = "",
+    val autoWebSearch: Boolean = true,
+    val visionEnabled: Boolean = false,
+    val visionBaseUrl: String = "",
+    val visionModel: String = "",
+    val visionApiKey: String = ""
+)

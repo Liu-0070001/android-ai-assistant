@@ -29,6 +29,18 @@ import com.tom_roush.pdfbox.text.PDFTextStripper
 import org.xmlpull.v1.XmlPullParser
 import java.util.zip.ZipInputStream
 
+private const val MATH_TUTOR_PROMPT = """你是「考研数学讲题人」，一位擅长考研数学与高等数学的引导式讲题老师。你的目标是提升学生的做题能力，而不是当“答案机器”。
+
+教学规则：
+1. 收到题目（拍照识别或文字）后，先确认题目内容和考察的考点。
+2. 学生给出自己的解题思路或方法时：
+   - 思路正确：先肯定，顺着学生的思路继续推导并补全关键步骤，再提炼关键思维点与易错点，最后简洁总结。
+   - 思路有误或欠缺：明确指出错在哪一步、为什么错（结合数学原理），引导学生转向正确的思考方向，不要直接代劳。
+3. 学生没有给出思路时：用提问引导，例如“这道题考察哪个知识点？”“已知条件能推出什么？”“你打算从哪个方向入手？”，分步引导学生自己完成关键推导。
+4. 除非学生明确要求“直接给出详细答案/完整解答”，否则始终以引导为主，不一次性讲完整道题。
+5. 讲解紧扣考研数学常考点（极限、导数、积分、级数、微分方程、线性代数、概率论等），指出常见易错点，注重方法总结。
+6. 全程使用简体中文，条理清晰，语气鼓励。"""
+
 class AssistantViewModel(application: Application) : AndroidViewModel(application) {
     private val masterKey = MasterKey.Builder(application).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build()
     private val securePrefs = EncryptedSharedPreferences.create(
@@ -44,6 +56,7 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
     private val _knowledge = MutableStateFlow(loadKnowledge())
     val knowledge = _knowledge.asStateFlow()
     private val _personas = MutableStateFlow(listOf(
+        Persona(name = "考研数学讲题人", prompt = MATH_TUTOR_PROMPT, icon = "Σ", official = true),
         Persona(name = "通用助手", prompt = "你是可靠、简洁的中文助手。", icon = "✦", official = true),
         Persona(name = "学习教练", prompt = "你是鼓励式学习教练，给出明确的下一步。", icon = "◈", official = true),
         Persona(name = "代码伙伴", prompt = "你是严谨的软件工程助手。", icon = "⌘", official = true)
@@ -59,7 +72,11 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
         baseUrl = securePrefs.getString("base_url", "") ?: "",
         model = securePrefs.getString("model", "") ?: "",
         apiKey = securePrefs.getString("api_key", "") ?: "",
-        autoWebSearch = securePrefs.getBoolean("auto_web_search", true)
+        autoWebSearch = securePrefs.getBoolean("auto_web_search", true),
+        visionEnabled = securePrefs.getBoolean("vision_enabled", false),
+        visionBaseUrl = securePrefs.getString("vision_base_url", "") ?: "",
+        visionModel = securePrefs.getString("vision_model", "") ?: "",
+        visionApiKey = securePrefs.getString("vision_api_key", "") ?: ""
     ))
     val settings = _settings.asStateFlow()
     private val _activePersona = MutableStateFlow(_personas.value.first())
@@ -269,11 +286,22 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
         val normalized = settings.copy(
             baseUrl = settings.baseUrl.trim().trimEnd('/'),
             model = settings.model.trim(),
-            apiKey = settings.apiKey.trim()
+            apiKey = settings.apiKey.trim(),
+            visionBaseUrl = settings.visionBaseUrl.trim().trimEnd('/'),
+            visionModel = settings.visionModel.trim(),
+            visionApiKey = settings.visionApiKey.trim()
         )
         _settings.value = normalized
-        securePrefs.edit().putString("base_url", normalized.baseUrl).putString("model", normalized.model)
-            .putString("api_key", normalized.apiKey).putBoolean("auto_web_search", normalized.autoWebSearch).apply()
+        securePrefs.edit()
+            .putString("base_url", normalized.baseUrl)
+            .putString("model", normalized.model)
+            .putString("api_key", normalized.apiKey)
+            .putBoolean("auto_web_search", normalized.autoWebSearch)
+            .putBoolean("vision_enabled", normalized.visionEnabled)
+            .putString("vision_base_url", normalized.visionBaseUrl)
+            .putString("vision_model", normalized.visionModel)
+            .putString("vision_api_key", normalized.visionApiKey)
+            .apply()
     }
     fun clearConversation() {
         completionJob?.cancel()
@@ -314,8 +342,23 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
         _loading.value = true
         completionJob = viewModelScope.launch {
             try {
-                val completion = requestCompletion(configured, user)
-                _messages.value += ChatMessage(sender = Sender.ASSISTANT, content = completion.content, sources = completion.sources)
+                val hasImage = attachments.any { it.kind == AttachmentKind.IMAGE }
+                val hasVisionModel = configured.visionEnabled &&
+                    configured.visionBaseUrl.isNotBlank() &&
+                    configured.visionModel.isNotBlank() &&
+                    configured.visionApiKey.isNotBlank()
+                val recognized = if (hasImage && hasVisionModel) {
+                    recognizeProblem(configured, attachments)
+                } else {
+                    ""
+                }
+                val completion = requestCompletion(configured, user, recognized)
+                val content = if (recognized.isBlank()) {
+                    completion.content
+                } else {
+                    "【识别到的题目】\n$recognized\n\n---\n\n${completion.content}"
+                }
+                _messages.value += ChatMessage(sender = Sender.ASSISTANT, content = content, sources = completion.sources)
                 saveMessages()
             } catch (error: CancellationException) {
                 throw error
@@ -377,41 +420,73 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
         return results.filter { it.second.isNotBlank() }.take(4)
     }
 
-    private suspend fun requestCompletion(settings: ApiSettings, user: ChatMessage): Completion = withContext(Dispatchers.IO) {
-        val url = URL("${settings.baseUrl.trimEnd('/')}/chat/completions")
+    private suspend fun recognizeProblem(settings: ApiSettings, attachments: List<Attachment>): String = withContext(Dispatchers.IO) {
+        val prompt = "你是数学题目识别助手。请完整、准确地识别图片中的题目内容：保留所有已知条件、符号、数字、单位与问题要求；若含多个小题请逐题列出。直接输出转写后的题目文字，不要解答，不要评价。"
+        val images = attachments.filter { it.kind == AttachmentKind.IMAGE }
+        val messages = JSONArray().put(JSONObject().put("role", "user").put("content", buildMultimodalContent(prompt, images)))
+        val response = postCompletion(settings.visionBaseUrl, settings.visionApiKey, settings.visionModel, messages, temperature = 0.1)
+        val payload = runCatching { JSONObject(response) }.getOrElse {
+            throw IllegalStateException("识图模型返回内容不是有效 JSON，请检查识图模型配置。")
+        }
+        payload.getJSONArray("choices").getJSONObject(0).getJSONObject("message").optString("content", "识图模型未返回识别结果")
+    }
+
+    private fun postCompletion(
+        baseUrl: String,
+        apiKey: String,
+        model: String,
+        messages: JSONArray,
+        temperature: Double
+    ): String {
+        val url = URL("${baseUrl.trimEnd('/')}/chat/completions")
+        val connection = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"; doOutput = true; connectTimeout = 30_000; readTimeout = 90_000
+            setRequestProperty("Content-Type", "application/json")
+            setRequestProperty("Authorization", "Bearer $apiKey")
+        }
+        connection.outputStream.bufferedWriter().use {
+            it.write(JSONObject().put("model", model).put("messages", messages).put("temperature", temperature).toString())
+        }
+        val stream = if (connection.responseCode in 200..299) connection.inputStream else connection.errorStream
+        val response = stream?.readBytes()?.toString(Charsets.UTF_8).orEmpty()
+        if (connection.responseCode !in 200..299) {
+            throw IllegalStateException("服务返回 HTTP ${connection.responseCode}：${response.take(240)}")
+        }
+        if (response.trimStart().startsWith("<") || !connection.contentType.orEmpty().contains("json", ignoreCase = true)) {
+            throw IllegalStateException("服务返回了网页而非 OpenAI 兼容 JSON。请确认 API 地址是接口根路径（通常以 /v1 结尾），而不是网站首页或登录页。")
+        }
+        return response
+    }
+
+    private suspend fun requestCompletion(settings: ApiSettings, user: ChatMessage, recognizedProblem: String = ""): Completion = withContext(Dispatchers.IO) {
         val skillInstructions = _skills.value.filter { it.installed && it.enabled && it.content.isNotBlank() }.joinToString("\n\n") { "已启用 Skill：${it.name}\n${it.content}" }
         val systemPrompt = listOf(_activePersona.value.prompt, skillInstructions).filter { it.isNotBlank() }.joinToString("\n\n")
         val requestMessages = JSONArray().put(JSONObject().put("role", "system").put("content", systemPrompt))
         _messages.value.filter { it.id != user.id }.takeLast(12).forEach { message ->
             requestMessages.put(JSONObject().put("role", if (message.sender == Sender.USER) "user" else "assistant").put("content", message.content))
         }
-        val knowledge = retrieveKnowledge(user.content)
-        val webResults = if (settings.autoWebSearch && !knowledge.hasStrongMatch) runCatching { searchWeb(user.content) }.getOrDefault(emptyList()) else emptyList()
+        val query = if (recognizedProblem.isNotBlank()) recognizedProblem.take(300) else user.content
+        val knowledge = retrieveKnowledge(query)
+        val webResults = if (settings.autoWebSearch && !knowledge.hasStrongMatch && query.isNotBlank()) runCatching { searchWeb(query) }.getOrDefault(emptyList()) else emptyList()
         val prompt = buildString {
             append(user.content)
+            if (recognizedProblem.isNotBlank()) {
+                append("\n\n【拍照识别的题目】\n$recognizedProblem")
+                append("\n\n学生拍照提问。请按讲题人规则处理：学生已给出思路就先评价思路、再顺着讲解或纠错引导；未给出思路就先引导，不要直接讲完整道题。")
+            }
             if (knowledge.context.isNotBlank()) {
                 append("\n\n本地知识库检索结果：\n${knowledge.context}")
                 append("\n\n回答要求：优先依据高相关本地片段；引用本地资料时标明【文件名 · 片段编号】；资料只部分相关时明确证据边界，不要把低相关片段当作确定答案。")
             }
             if (webResults.isNotEmpty()) append("\n\n本地资料不足，以下是联网搜索摘要。只可依据摘要回答，并标明网址：\n" + webResults.joinToString("\n") { "${it.first}\n${it.second}" })
         }
-        requestMessages.put(JSONObject().put("role", "user").put("content", buildMultimodalContent(prompt, user.attachments)))
-        val connection = (url.openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"; doOutput = true; connectTimeout = 30_000; readTimeout = 90_000
-            setRequestProperty("Content-Type", "application/json")
-            setRequestProperty("Authorization", "Bearer ${settings.apiKey}")
+        val content = if (recognizedProblem.isBlank()) {
+            buildMultimodalContent(prompt, user.attachments)
+        } else {
+            prompt
         }
-        val body = JSONObject().put("model", settings.model).put("messages", requestMessages).put("temperature", 0.5).toString()
-        connection.outputStream.bufferedWriter().use { it.write(body) }
-        val stream = if (connection.responseCode in 200..299) connection.inputStream else connection.errorStream
-        val response = stream?.readBytes()?.toString(Charsets.UTF_8).orEmpty()
-        val contentType = connection.contentType.orEmpty()
-        if (connection.responseCode !in 200..299) {
-            throw IllegalStateException("服务返回 HTTP ${connection.responseCode}：${response.take(240)}")
-        }
-        if (response.trimStart().startsWith("<") || !contentType.contains("json", ignoreCase = true)) {
-            throw IllegalStateException("服务返回了网页而非 OpenAI 兼容 JSON。请确认 API 地址是接口根路径（通常以 /v1 结尾），而不是网站首页或登录页。")
-        }
+        requestMessages.put(JSONObject().put("role", "user").put("content", content))
+        val response = postCompletion(settings.baseUrl, settings.apiKey, settings.model, requestMessages, temperature = 0.5)
         val payload = runCatching { JSONObject(response) }.getOrElse {
             throw IllegalStateException("服务返回的内容不是有效 JSON，请检查 API 地址、模型和服务商兼容性。")
         }

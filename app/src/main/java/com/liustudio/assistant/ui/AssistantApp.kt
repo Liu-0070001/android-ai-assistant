@@ -286,6 +286,14 @@ fun ChatScreen(vm: AssistantViewModel, onNavigate: (Int) -> Unit) {
                 attachments = emptyList()
             }
         )
+        if (attachments.any { it.kind == AttachmentKind.IMAGE }) {
+            Text(
+                text = "发送后将先由识图模型提取题目，再由讲题人引导讲解。",
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 }
 
@@ -295,7 +303,7 @@ private fun SuggestionRow(onSelect: (String) -> Unit) {
         contentPadding = PaddingValues(top = 4.dp, bottom = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        items(listOf("总结知识库内容", "帮我制定学习计划", "解释一段代码")) { suggestion ->
+        items(listOf("出一道高数题让我练手", "讲讲等价无穷小的适用条件", "总结一道考研真题的思维点")) { suggestion ->
             AssistChip(
                 onClick = { onSelect(suggestion) },
                 label = { Text(suggestion) }

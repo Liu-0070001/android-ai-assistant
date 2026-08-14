@@ -434,6 +434,11 @@ fun SettingsScreen(vm: AssistantViewModel) {
     var key by remember(saved) { mutableStateOf(saved.apiKey) }
     var autoSearch by remember(saved) { mutableStateOf(saved.autoWebSearch) }
     var revealKey by remember { mutableStateOf(false) }
+    var visionEnabled by remember(saved) { mutableStateOf(saved.visionEnabled) }
+    var visionBaseUrl by remember(saved) { mutableStateOf(saved.visionBaseUrl) }
+    var visionModel by remember(saved) { mutableStateOf(saved.visionModel) }
+    var visionKey by remember(saved) { mutableStateOf(saved.visionApiKey) }
+    var revealVisionKey by remember { mutableStateOf(false) }
     val context = LocalContext.current
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -496,18 +501,83 @@ fun SettingsScreen(vm: AssistantViewModel) {
                 }
                 Switch(checked = autoSearch, onCheckedChange = { autoSearch = it })
             }
+            HorizontalDivider()
+            Text("识图模型（拍照识题）", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("使用独立识图模型", fontWeight = FontWeight.Medium)
+                    Text(
+                        text = "拍照后先由识图模型提取题目，再由文本模型引导讲解。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(checked = visionEnabled, onCheckedChange = { visionEnabled = it })
+            }
+            if (visionEnabled) {
+                OutlinedTextField(
+                    value = visionBaseUrl,
+                    onValueChange = { visionBaseUrl = it },
+                    label = { Text("识图 API 地址") },
+                    placeholder = { Text("https://api.example.com/v1") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = visionModel,
+                    onValueChange = { visionModel = it },
+                    label = { Text("识图模型名称") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = visionKey,
+                    onValueChange = { visionKey = it },
+                    label = { Text("识图 API Key") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    visualTransformation = if (revealVisionKey) {
+                        VisualTransformation.None
+                    } else {
+                        PasswordVisualTransformation()
+                    },
+                    trailingIcon = {
+                        IconButton(onClick = { revealVisionKey = !revealVisionKey }) {
+                            Icon(
+                                imageVector = if (revealVisionKey) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                contentDescription = if (revealVisionKey) "隐藏识图 Key" else "显示识图 Key"
+                            )
+                        }
+                    }
+                )
+            }
             Button(
                 onClick = {
-                    vm.saveSettings(ApiSettings(baseUrl, model, key, autoSearch))
+                    vm.saveSettings(
+                        ApiSettings(
+                            baseUrl = baseUrl,
+                            model = model,
+                            apiKey = key,
+                            autoWebSearch = autoSearch,
+                            visionEnabled = visionEnabled,
+                            visionBaseUrl = visionBaseUrl,
+                            visionModel = visionModel,
+                            visionApiKey = visionKey
+                        )
+                    )
                     Toast.makeText(context, "配置已保存", Toast.LENGTH_SHORT).show()
                 },
                 modifier = Modifier.fillMaxWidth(),
-                enabled = baseUrl.isNotBlank() && model.isNotBlank() && key.isNotBlank()
+                enabled = baseUrl.isNotBlank() && model.isNotBlank() && key.isNotBlank() &&
+                    (!visionEnabled || (visionBaseUrl.isNotBlank() && visionModel.isNotBlank() && visionKey.isNotBlank()))
             ) {
                 Text("保存本机配置")
             }
             Text(
-                text = "API Key 使用设备私有加密存储。消息和附件会直接发送到你配置的 AI 服务。",
+                text = "文本模型负责讲解，识图模型负责提取题目，可分别使用不同国产模型服务商。API Key 使用设备私有加密存储。",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
